@@ -15,9 +15,13 @@ Sub-segmentos dentro de NACIONAL:
 USO: python procesar_ventas.py
 """
 
-import os, json, datetime as dt, warnings, calendar, base64
+import os, sys, json, datetime as dt, warnings, calendar, base64
 import pandas as pd
 import numpy as np
+
+# Importar lector de fuentes desde procesar.py
+sys.path.insert(0, r"C:\Users\jarias\Desktop\tractocar-ventas")
+import procesar as _proc
 
 warnings.filterwarnings("ignore")
 
@@ -144,9 +148,9 @@ def main():
     except Exception:
         pass
 
-    # ---- 2. UNIFICADO (todas las fuentes) ----
-    print(f"> Unificado: {os.path.basename(RUTA_UNIFICADO)}")
-    u = pd.read_excel(RUTA_UNIFICADO, sheet_name="Union")
+    # ---- 2. LEER FUENTES DIRECTAMENTE ----
+    print("> Leyendo archivos fuente directamente...")
+    u = _proc.obtener_union(verbose=True)
     u["_nit"] = u["ClienteNIT"].apply(norm_nit)
     u["Cod"]  = u["_nit"].map(NIT_A_COD)
 
@@ -171,6 +175,15 @@ def main():
         u_nac.loc[mask_sin_cod, "Cod"] = u_nac.loc[mask_sin_cod, "_nit"].map(NIT_A_COD)
     u_nac = u_nac[u_nac["Cod"].notna()].copy()
     u_nac["Subseg"] = u_nac["Token"].apply(get_subseg)
+
+    # Alias: codigo fuente -> codigo presupuesto
+    COD_ALIAS = {
+        "COLP": "KIMB",   # KIMB cambió de nombre a COLP
+    }
+    # Clientes que siempre van a OTROS CLIENTES
+    SIEMPRE_OTROS = {"CPA", "GDANE", "SOCO", "YUPI"}
+    u_nac["Cod"] = u_nac["Cod"].replace(COD_ALIAS)
+
     if "Dia" not in u_nac.columns:
         u_nac["Dia"] = pd.to_datetime(u_nac["Fecha"], errors="coerce").dt.day
 
@@ -230,15 +243,15 @@ def main():
                  .rename(columns={"OB_CUSTOMER_CODE":"Cod"}))
     print(f"  {len(filtrado)} OB pendientes | ${filtrado['OB_RATE_RECEIVABLE'].sum():,.0f}")
 
-    # ---- 4. TABLA BASE (para resumen Python) ----
-    # Calcular ejecutado NAC completo (todos los dias) para el print
+    # ---- 4. TABLA BASE ----
     ej_all = (m_act.groupby("Cod")
               .agg(EJECUTADO=("AFacturar","sum"), UTILIDAD=("Utilidad","sum"),
                    VIAJES=("Manifiesto","nunique"))
               .reset_index())
 
-    df = budget.copy()
-    for right in [ej_all, mes_ant_agg, pendiente]:
+    # Outer join: incluir clientes con venta aunque no esten en PPTO
+    df = budget.merge(ej_all, on="Cod", how="outer")
+    for right in [mes_ant_agg, pendiente]:
         df = df.merge(right, on="Cod", how="left")
 
     num_cols = ["PPTO","META_UTIL","M_VIAJES","COMPRA_PPTO","PCT_INTER_M",
@@ -247,8 +260,8 @@ def main():
         if c not in df.columns: df[c] = 0.0
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    # Agrupar clientes sin venta ni mes anterior en OTROS CLIENTES
-    sin_venta = (df["EJECUTADO"] == 0) & (df["VENTA_MES_ANT"] == 0)
+    # Agrupar en OTROS: sin venta en ambos meses, O cliente forzado a OTROS
+    sin_venta = ((df["EJECUTADO"] == 0) & (df["VENTA_MES_ANT"] == 0)) | df["Cod"].isin(SIEMPRE_OTROS)
     otros = df[sin_venta].copy()
     df    = df[~sin_venta].copy()
     otros_count = len(otros)
@@ -266,7 +279,32 @@ def main():
     print(f"  Otros clit:  {otros_count} agrupados en 'OTROS CLIENTES'")
     print("=" * 64)
 
-    # ---- 5. PREPARAR PAYLOAD PARA JS ----
+    # ---- 5. MANIFIESTOS A PERDIDA (NACIONAL mes actual) ----
+    m_act["COMPRA"] = m_act["AFacturar"] - m_act["Utilidad"]
+    man_grp = (m_act.groupby("Manifiesto")
+               .agg(Cod=("Cod","first"),
+                    Fecha=("Fecha","first"),
+                    VENTA=("AFacturar","sum"),
+                    COMPRA=("COMPRA","sum"),
+                    OBs=("OB","nunique"))
+               .reset_index())
+    man_grp["UTIL"] = man_grp["VENTA"] - man_grp["COMPRA"]
+    man_grp["MARGEN"] = (man_grp["UTIL"] / man_grp["VENTA"].replace(0, float("nan"))).fillna(0)
+    perdidas_df = man_grp[man_grp["UTIL"] < 0].sort_values("UTIL")
+    perdidas_js = [
+        {"man": str(r["Manifiesto"]),
+         "cod": str(r["Cod"]),
+         "fecha": str(r["Fecha"])[:10] if pd.notna(r["Fecha"]) else "",
+         "venta": round(float(r["VENTA"]), 0),
+         "compra": round(float(r["COMPRA"]), 0),
+         "util": round(float(r["UTIL"]), 0),
+         "margen": round(float(r["MARGEN"]), 4),
+         "obs": int(r["OBs"])}
+        for _, r in perdidas_df.iterrows()
+    ]
+    print(f"  Manifiestos a perdida: {len(perdidas_js)}")
+
+    # ---- 6. PREPARAR PAYLOAD PARA JS ----
     # Budget dict por Cod
     ppto_js = {}
     for _, r in budget.iterrows():
@@ -312,6 +350,7 @@ def main():
         f"window.OTROS={json.dumps(otros_js, ensure_ascii=False)};"
         f"window.CLIENTES={json.dumps(clientes_activos, ensure_ascii=False)};"
         f"window.OPS_KPI={json.dumps(ops_kpi, ensure_ascii=False)};"
+        f"window.PERDIDAS={json.dumps(perdidas_js, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
         f"nombreMes:'{nombre_mes}',labelHoy:'{label_hoy}',labelAyer:'{label_ayer}',"
@@ -464,6 +503,12 @@ td:first-child{text-align:left;font-weight:600}
 .b-ok{background:#22c55e}.b-wn{background:#f59e0b}.b-bd{background:#ef4444}
 .pl{font-weight:600;min-width:38px;text-align:right}
 .note{font-size:.68rem;color:#445566;margin-top:1px}
+
+/* TABS VISTA */
+.view-tabs{display:flex;gap:0;padding:0 24px;background:#040a12;border-bottom:1px solid #0e1e2e}
+.view-tab{background:none;border:none;border-bottom:2px solid transparent;color:#64748b;font-size:.78rem;font-weight:600;padding:10px 18px;cursor:pointer;transition:all .15s}
+.view-tab.active{color:#f97316;border-bottom-color:#f97316}
+.view-tab:hover:not(.active){color:#94a3b8}
 </style>
 </head>
 <body>
@@ -524,6 +569,13 @@ td:first-child{text-align:left;font-weight:600}
   </div>
 </div>
 
+<!-- Tabs vista -->
+<div class="view-tabs">
+  <button class="view-tab active" onclick="setView('tabla',this)">&#9776; Tabla Nacional</button>
+  <button class="view-tab" onclick="setView('perdidas',this)">&#9888; Manifiestos a Pérdida</button>
+</div>
+
+<div id="viewTabla">
 <div class="container">
   <table id="tbl">
     <thead>
@@ -550,6 +602,31 @@ td:first-child{text-align:left;font-weight:600}
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+</div><!-- /container -->
+</div><!-- /viewTabla -->
+
+<!-- Vista Pérdidas -->
+<div id="viewPerdidas" style="display:none;padding:14px 10px;overflow-x:auto">
+  <div style="margin-bottom:10px;color:#94a3b8;font-size:.78rem">
+    Manifiestos donde <b style="color:#ef4444">compra &gt; venta</b> — mes actual, solo NACIONAL
+  </div>
+  <table style="width:100%;border-collapse:collapse;min-width:800px;font-size:.77rem">
+    <thead>
+      <tr style="background:#1a0d0d">
+        <th style="text-align:left;padding:7px 8px;color:#ef4444;border-bottom:2px solid #3a1010">MANIFIESTO</th>
+        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">CLIENTE</th>
+        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">FECHA</th>
+        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">OBs</th>
+        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">VENTA</th>
+        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">COMPRA</th>
+        <th style="padding:7px 8px;color:#ef4444;border-bottom:2px solid #3a1010">PÉRDIDA</th>
+        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">MARGEN</th>
+      </tr>
+    </thead>
+    <tbody id="tbodyPerdidas"></tbody>
   </table>
 </div>
 
@@ -841,6 +918,51 @@ function buildKPICards(){
       '</div>';
     grid.appendChild(card);
   });
+}
+
+/* ---- Cambio de vista ---- */
+function setView(v, btn){
+  document.querySelectorAll('.view-tab').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  document.getElementById('viewTabla').style.display    = v==='tabla'    ? '' : 'none';
+  document.getElementById('viewPerdidas').style.display = v==='perdidas' ? '' : 'none';
+  if(v==='perdidas') buildPerdidas();
+}
+
+/* ---- Tabla manifiestos a pérdida ---- */
+function buildPerdidas(){
+  var data = window.PERDIDAS || [];
+  var tbody = document.getElementById('tbodyPerdidas');
+  if(tbody.dataset.built) return;
+  tbody.dataset.built = '1';
+  tbody.innerHTML = '';
+  if(!data.length){
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:#445566">Sin manifiestos a pérdida en el mes actual</td></tr>';
+    return;
+  }
+  var totalPerd = 0;
+  data.forEach(function(r){
+    totalPerd += r.util;
+    var tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #1a1010';
+    tr.innerHTML =
+      '<td style="text-align:left;padding:6px 8px;font-weight:600;color:#fca5a5">'+r.man+'</td>'+
+      '<td style="padding:6px 8px;color:#94a3b8">'+r.cod+'</td>'+
+      '<td style="padding:6px 8px;color:#64748b">'+r.fecha+'</td>'+
+      '<td style="padding:6px 8px;color:#64748b">'+r.obs+'</td>'+
+      '<td style="padding:6px 8px;color:#e2e8f0">'+COP.format(r.venta)+'</td>'+
+      '<td style="padding:6px 8px;color:#fbbf24">'+COP.format(r.compra)+'</td>'+
+      '<td style="padding:6px 8px;color:#ef4444;font-weight:700">'+COP.format(r.util)+'</td>'+
+      '<td style="padding:6px 8px;color:#ef4444">'+(r.margen*100).toFixed(1)+'%</td>';
+    tbody.appendChild(tr);
+  });
+  var tf = document.createElement('tr');
+  tf.style.cssText = 'background:#1a0505;border-top:2px solid #ef4444;font-weight:700';
+  tf.innerHTML =
+    '<td colspan="4" style="text-align:left;padding:6px 8px;color:#ef4444">TOTAL ('+data.length+' manifiestos)</td>'+
+    '<td colspan="3" style="padding:6px 8px;color:#ef4444">'+COP.format(totalPerd)+'</td>'+
+    '<td></td>';
+  tbody.appendChild(tf);
 }
 
 /* ---- INIT ---- */
