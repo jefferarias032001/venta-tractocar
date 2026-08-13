@@ -19,9 +19,9 @@ import os, sys, json, datetime as dt, warnings, calendar, base64
 import pandas as pd
 import numpy as np
 
-# Importar lector de fuentes desde procesar.py
-sys.path.insert(0, r"C:\Users\jarias\Desktop\tractocar-ventas")
-import procesar as _proc
+# Lector de datos local (sin filtro TL en NACIONAL)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leer_datos as _proc
 
 warnings.filterwarnings("ignore")
 
@@ -180,8 +180,11 @@ def main():
     COD_ALIAS = {
         "COLP": "KIMB",   # KIMB cambió de nombre a COLP
     }
+    # Clientes que se convierten en operación propia (se sacan de NACIONAL)
+    CLIENTES_OPERACION = {"JEMA"}
     # Clientes que siempre van a OTROS CLIENTES
-    SIEMPRE_OTROS = {"CPA", "GDANE", "SOCO", "YUPI"}
+    SIEMPRE_OTROS = {"CPA", "GDANE", "SOCO", "YUPI",
+                     "ESEN_CR_ESPE", "CRESC", "LHCO", "MOIN", "ESEN_MB", "MECO"}
     u_nac["Cod"] = u_nac["Cod"].replace(COD_ALIAS)
 
     if "Dia" not in u_nac.columns:
@@ -192,8 +195,10 @@ def main():
     print(f"  {len(m_act):,} registros en {mes_actual} | dias: {sorted(m_act['Dia'].dropna().astype(int).unique())}")
 
     # Construir estructura diaria para JS: {Cod: {Subseg: {dia: [V, U, N]}}}
+    # Excluir clientes que son su propia operacion
+    m_act_tabla = m_act[~m_act["Cod"].isin(CLIENTES_OPERACION)].copy()
     daily_dict = {}
-    for (cod, subseg, dia), grp in m_act.groupby(["Cod","Subseg","Dia"]):
+    for (cod, subseg, dia), grp in m_act_tabla.groupby(["Cod","Subseg","Dia"]):
         if cod not in daily_dict:
             daily_dict[cod] = {}
         if subseg not in daily_dict[cod]:
@@ -204,8 +209,62 @@ def main():
             int(grp["Manifiesto"].nunique()),
         ]
 
+    # ---- OPS_DIARIO: datos diarios por operacion para proyeccion en JS ----
+    ops_diario = {}
+    # Nacional puro (sin JEMA, sin SIEMPRE_OTROS — AJOV_MOV SI incluido)
+    nac_puro = m_act[~m_act["Cod"].isin(CLIENTES_OPERACION | SIEMPRE_OTROS)]
+    for dia, grp in nac_puro.groupby("Dia"):
+        ops_diario.setdefault("NACIONAL", {})[str(int(dia))] = [
+            round(float(grp["AFacturar"].sum()), 0),
+            round(float(grp["Utilidad"].sum()), 0),
+            int(grp["Manifiesto"].nunique())]
+    # AJOV_MOV separado para que JS pueda restarlo cuando esté excluido
+    ajov_df = m_act[m_act["Cod"] == "AJOV_MOV"]
+    for dia, grp in ajov_df.groupby("Dia"):
+        ops_diario.setdefault("AJOV_MOV", {})[str(int(dia))] = [
+            round(float(grp["AFacturar"].sum()), 0),
+            round(float(grp["Utilidad"].sum()), 0),
+            int(grp["Manifiesto"].nunique())]
+    # Clientes que son su propia operacion (JEMA, AJOV_MOV)
+    for cliente in CLIENTES_OPERACION:
+        cl_df = m_act[m_act["Cod"] == cliente]
+        for dia, grp in cl_df.groupby("Dia"):
+            ops_diario.setdefault(cliente, {})[str(int(dia))] = [
+                round(float(grp["AFacturar"].sum()), 0),
+                round(float(grp["Utilidad"].sum()), 0),
+                int(grp["Manifiesto"].nunique())]
+    # IMPO, EXPO, CEDIS, NAL-TL por dia
+    for fuente in ["IMPO", "EXPO", "CEDIS", "NAL-TL"]:
+        f_df = u_mes_all[u_mes_all["Fuente"] == fuente]
+        for dia, grp in f_df.groupby("Dia"):
+            ops_diario.setdefault(fuente, {})[str(int(dia))] = [
+                round(float(grp["AFacturar"].sum()), 0),
+                round(float(grp["Utilidad"].sum()), 0),
+                int(grp["Manifiesto"].nunique())]
+
+    # Actualizar OPS_KPI con operaciones individuales y COMEX
+    for cliente in CLIENTES_OPERACION:
+        cl_df = m_act[m_act["Cod"] == cliente]
+        ops_kpi[cliente] = {
+            "VENTA":    round(float(cl_df["AFacturar"].sum()), 0),
+            "UTILIDAD": round(float(cl_df["Utilidad"].sum()), 0),
+            "VIAJES":   int(cl_df["Manifiesto"].nunique()),
+        }
+    nal_tl_kpi = ops_kpi.get("NAL-TL", {})
+    ops_kpi["COMEX"] = {
+        "VENTA":    (ops_kpi.get("IMPO",{}).get("VENTA",0) + ops_kpi.get("EXPO",{}).get("VENTA",0) + nal_tl_kpi.get("VENTA",0)),
+        "UTILIDAD": (ops_kpi.get("IMPO",{}).get("UTILIDAD",0) + ops_kpi.get("EXPO",{}).get("UTILIDAD",0) + nal_tl_kpi.get("UTILIDAD",0)),
+        "VIAJES":   (ops_kpi.get("IMPO",{}).get("VIAJES",0) + ops_kpi.get("EXPO",{}).get("VIAJES",0) + nal_tl_kpi.get("VIAJES",0)),
+    }
+    # NACIONAL puro (sin JEMA, AJOV_MOV, SIEMPRE_OTROS)
+    ops_kpi["NACIONAL"] = {
+        "VENTA":    round(float(nac_puro["AFacturar"].sum()), 0),
+        "UTILIDAD": round(float(nac_puro["Utilidad"].sum()), 0),
+        "VIAJES":   int(nac_puro["Manifiesto"].nunique()),
+    }
+
     # Venta de ayer y hoy: usar los ultimos 2 dias con datos disponibles
-    dias_disponibles = sorted(m_act["Dia"].dropna().astype(int).unique())
+    dias_disponibles = sorted(m_act_tabla["Dia"].dropna().astype(int).unique())
     dia_hoy  = dias_disponibles[-1]  if len(dias_disponibles) >= 1 else None
     dia_ayer = dias_disponibles[-2]  if len(dias_disponibles) >= 2 else None
     label_hoy  = f"dia {dia_hoy}"  if dia_hoy  else "—"
@@ -215,36 +274,57 @@ def main():
     fijo_hoy  = {}
     fijo_ayer = {}
     if dia_hoy:
-        hoy_df = m_act[m_act["Dia"] == dia_hoy].groupby("Cod")["AFacturar"].sum()
+        hoy_df = m_act_tabla[m_act_tabla["Dia"] == dia_hoy].groupby("Cod")["AFacturar"].sum()
         fijo_hoy = hoy_df.to_dict()
     if dia_ayer:
-        ayer_df = m_act[m_act["Dia"] == dia_ayer].groupby("Cod")["AFacturar"].sum()
+        ayer_df = m_act_tabla[m_act_tabla["Dia"] == dia_ayer].groupby("Cod")["AFacturar"].sum()
         fijo_ayer = ayer_df.to_dict()
 
-    # Mes anterior (total por cliente, todas las operaciones)
+    # Mes anterior (total por cliente, para la tabla resumen)
     m_ant = u_nac[u_nac["Mes"] == mes_anterior]
     mes_ant_agg = (m_ant.groupby("Cod")["AFacturar"]
                    .sum().rename("VENTA_MES_ANT").reset_index())
 
+    # Mes anterior día a día (mismo formato que DIARIO, para filtrar por rango d1-d2 en JS)
+    m_ant_tabla = m_ant[~m_ant["Cod"].isin(CLIENTES_OPERACION)].copy()
+    if "Dia" not in m_ant_tabla.columns:
+        m_ant_tabla["Dia"] = pd.to_datetime(m_ant_tabla["Fecha"], errors="coerce").dt.day
+    if "Subseg" not in m_ant_tabla.columns:
+        m_ant_tabla["Subseg"] = m_ant_tabla["Token"].apply(get_subseg)
+    diario_ant_dict = {}
+    for (cod, subseg, dia), grp in m_ant_tabla.groupby(["Cod", "Subseg", "Dia"]):
+        diario_ant_dict.setdefault(str(cod), {}).setdefault(str(subseg), {})[str(int(dia))] = [
+            round(float(grp["AFacturar"].sum()), 0),
+            round(float(grp["Utilidad"].sum()), 0),
+            int(grp["Manifiesto"].nunique()),
+        ]
+
     # ---- 3. PENDIENTES POR PLANILLAR ----
     print(f"> Solicitudes: {os.path.basename(RUTA_SOLICITUDES)}")
-    hrow_sol = buscar_header_row_ob(RUTA_SOLICITUDES, "Sheet1")
-    sol = pd.read_excel(RUTA_SOLICITUDES, sheet_name="Sheet1", header=hrow_sol)
-    sol.columns = [str(c).strip() for c in sol.columns]
-    filtrado = sol[
-        (sol["OB_NOTES_CANCEL_USER"] == "-") &
-        (sol["SHIP_STATUS_ENROUTE"].isna())
-    ].copy()
-    pendiente = (filtrado
-                 .groupby("OB_CUSTOMER_CODE")
-                 .agg(P_PLANILLAR=("OB_RATE_RECEIVABLE","sum"),
-                      N_PLANILLAR=("OB","count"))
-                 .reset_index()
-                 .rename(columns={"OB_CUSTOMER_CODE":"Cod"}))
-    print(f"  {len(filtrado)} OB pendientes | ${filtrado['OB_RATE_RECEIVABLE'].sum():,.0f}")
+    try:
+        import shutil, tempfile
+        tmp_sol = os.path.join(tempfile.gettempdir(), "solicitudes_tmp.xlsx")
+        shutil.copy2(RUTA_SOLICITUDES, tmp_sol)
+        hrow_sol = buscar_header_row_ob(tmp_sol, "Sheet1")
+        sol = pd.read_excel(tmp_sol, sheet_name="Sheet1", header=hrow_sol)
+        sol.columns = [str(c).strip() for c in sol.columns]
+        filtrado = sol[
+            (sol["OB_NOTES_CANCEL_USER"] == "-") &
+            (sol["SHIP_STATUS_ENROUTE"].isna())
+        ].copy()
+        pendiente = (filtrado
+                     .groupby("OB_CUSTOMER_CODE")
+                     .agg(P_PLANILLAR=("OB_RATE_RECEIVABLE","sum"),
+                          N_PLANILLAR=("OB","count"))
+                     .reset_index()
+                     .rename(columns={"OB_CUSTOMER_CODE":"Cod"}))
+        print(f"  {len(filtrado)} OB pendientes | ${filtrado['OB_RATE_RECEIVABLE'].sum():,.0f}")
+    except Exception as _sol_err:
+        print(f"  [aviso] No se pudo leer Solicitudes ({_sol_err}). Pendientes en $0.")
+        pendiente = pd.DataFrame(columns=["Cod","P_PLANILLAR","N_PLANILLAR"])
 
     # ---- 4. TABLA BASE ----
-    ej_all = (m_act.groupby("Cod")
+    ej_all = (m_act_tabla.groupby("Cod")
               .agg(EJECUTADO=("AFacturar","sum"), UTILIDAD=("Utilidad","sum"),
                    VIAJES=("Manifiesto","nunique"))
               .reset_index())
@@ -284,6 +364,8 @@ def main():
     man_grp = (m_act.groupby("Manifiesto")
                .agg(Cod=("Cod","first"),
                     Fecha=("Fecha","first"),
+                    Dia=("Dia","first"),
+                    Subseg=("Subseg","first"),
                     VENTA=("AFacturar","sum"),
                     COMPRA=("COMPRA","sum"),
                     OBs=("OB","nunique"))
@@ -295,6 +377,8 @@ def main():
         {"man": str(r["Manifiesto"]),
          "cod": str(r["Cod"]),
          "fecha": str(r["Fecha"])[:10] if pd.notna(r["Fecha"]) else "",
+         "dia": int(r["Dia"]) if pd.notna(r["Dia"]) else 0,
+         "subseg": str(r["Subseg"]) if pd.notna(r["Subseg"]) else "",
          "venta": round(float(r["VENTA"]), 0),
          "compra": round(float(r["COMPRA"]), 0),
          "util": round(float(r["UTIL"]), 0),
@@ -303,6 +387,34 @@ def main():
         for _, r in perdidas_df.iterrows()
     ]
     print(f"  Manifiestos a perdida: {len(perdidas_js)}")
+
+    # ---- HISTORICO: tendencias mes a mes de clientes NACIONAL ----
+    hist_dict = {}
+    u_hist = u_nac[~u_nac["Cod"].isin(CLIENTES_OPERACION)].copy()
+    u_hist = u_hist[u_hist["Mes"].notna() & u_hist["Dia"].notna() & u_hist["Cod"].notna()]
+    for (cod, mes, dia), grp in u_hist.groupby(["Cod", "Mes", "Dia"]):
+        hist_dict.setdefault(str(cod), {}).setdefault(str(mes), {})[str(int(dia))] = [
+            round(float(grp["AFacturar"].sum()), 0),
+            int(grp["Manifiesto"].nunique()),
+        ]
+    print(f"  Histórico: {len(hist_dict)} clientes, {len(set(m for c in hist_dict.values() for m in c))} meses")
+
+    # ---- OPS_HISTORICO: tendencias mensuales por operacion {op: {mes: {dia: [V,U,N]}}} ----
+    ops_hist = {}
+    def _fill_ops_hist(key, df):
+        df2 = df[df["Mes"].notna() & df["Dia"].notna()]
+        for (mes, dia), grp in df2.groupby(["Mes", "Dia"]):
+            ops_hist.setdefault(key, {}).setdefault(str(mes), {})[str(int(dia))] = [
+                round(float(grp["AFacturar"].sum()), 0),
+                round(float(grp["Utilidad"].sum()), 0),
+                int(grp["Manifiesto"].nunique()),
+            ]
+    _fill_ops_hist("NACIONAL", u_nac[~u_nac["Cod"].isin(CLIENTES_OPERACION)])
+    _fill_ops_hist("JEMA",     u_nac[u_nac["Cod"] == "JEMA"])
+    for fuente in ["IMPO", "EXPO", "NAL-TL", "CEDIS"]:
+        _fill_ops_hist(fuente, u[u["Fuente"] == fuente])
+    meses_ops = set(m for k in ops_hist for m in ops_hist[k])
+    print(f"  OPS Histórico: {len(ops_hist)} ops, {len(meses_ops)} meses")
 
     # ---- 6. PREPARAR PAYLOAD PARA JS ----
     # Budget dict por Cod
@@ -329,19 +441,26 @@ def main():
 
     # Otros clientes (agrupados)
     otros_js = {
-        "PPTO":      float(otros["PPTO"].sum()),
-        "META_UTIL": float(otros["META_UTIL"].sum()),
-        "M_VIAJES":  float(otros["M_VIAJES"].sum()),
+        "PPTO":       float(otros["PPTO"].sum()),
+        "META_UTIL":  float(otros["META_UTIL"].sum()),
+        "M_VIAJES":   float(otros["M_VIAJES"].sum()),
         "P_PLANILLAR":float(otros["P_PLANILLAR"].sum()),
-        "n":         int(len(otros)),
-        "nombres":   sorted(otros["Cod"].tolist()),
+        "n":          int(len(otros)),
+        "nombres":    sorted(otros["Cod"].tolist()),
+        "detalle":    [
+            {"cod": r["Cod"],
+             "ej":  round(float(r.get("EJECUTADO", 0)), 0),
+             "pp":  round(float(r.get("PPTO", 0)), 0)}
+            for _, r in otros.iterrows()
+        ],
     } if len(otros) else None
 
-    # Lista de clientes activos (con venta)
-    clientes_activos = sorted(df["Cod"].tolist())
+    # Lista de clientes activos (excluir CLIENTES_OPERACION)
+    clientes_activos = sorted([c for c in df["Cod"].tolist() if c not in CLIENTES_OPERACION])
 
     payload = (
         f"window.DIARIO={json.dumps(daily_dict, ensure_ascii=False)};"
+        f"window.DIARIO_ANT={json.dumps(diario_ant_dict, ensure_ascii=False)};"
         f"window.PPTO_DATA={json.dumps(ppto_js, ensure_ascii=False)};"
         f"window.MES_ANT={json.dumps(mes_ant_js, ensure_ascii=False)};"
         f"window.PENDIENTE={json.dumps(pend_js, ensure_ascii=False)};"
@@ -350,7 +469,10 @@ def main():
         f"window.OTROS={json.dumps(otros_js, ensure_ascii=False)};"
         f"window.CLIENTES={json.dumps(clientes_activos, ensure_ascii=False)};"
         f"window.OPS_KPI={json.dumps(ops_kpi, ensure_ascii=False)};"
+        f"window.OPS_DIARIO={json.dumps(ops_diario, ensure_ascii=False)};"
         f"window.PERDIDAS={json.dumps(perdidas_js, ensure_ascii=False)};"
+        f"window.HISTORICO={json.dumps(hist_dict, ensure_ascii=False)};"
+        f"window.OPS_HISTORICO={json.dumps(ops_hist, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
         f"nombreMes:'{nombre_mes}',labelHoy:'{label_hoy}',labelAyer:'{label_ayer}',"
@@ -461,6 +583,15 @@ header .sub{font-size:.75rem;color:#64748b;margin-top:2px}
 /* SEGMENTO TABS */
 .seg-btn{background:#1e2d3d;border:1px solid #2d3f52;color:#94a3b8;border-radius:6px;padding:5px 13px;font-size:.77rem;cursor:pointer;font-weight:600;transition:all .15s}
 .seg-btn.active{background:#f97316;color:#fff;border-color:#f97316}
+.seg-btn-sub{background:#0e1e2e;border:1px solid #1e3a4e;color:#64748b;border-radius:5px;padding:4px 10px;font-size:.72rem;cursor:pointer;font-weight:600;transition:all .15s}
+.seg-btn-sub.active{background:#3b82f6;color:#fff;border-color:#3b82f6}
+.seg-btn-sub:hover:not(.active){background:#1a2d3e;color:#e2e8f0}
+#comexSub{display:none;flex-wrap:wrap;gap:4px;margin-top:4px;padding-left:80px;width:100%}
+.obs-input{width:100%;min-width:160px;background:#0d1a26;border:1px solid #1e3a4e;color:#f0c060;border-radius:4px;padding:4px 6px;font-size:.72rem;resize:vertical;min-height:32px;font-family:inherit}
+.obs-input:focus{outline:none;border-color:#f59e0b;background:#111e2e}
+.hcCard{background:#060f18;border:1px solid #1e3a4e;border-radius:8px;padding:10px 12px;overflow:hidden}
+.hyr-btn{background:none;border:1px solid #1e3a4e;color:#64748b;font-size:.71rem;font-weight:600;padding:3px 10px;border-radius:5px;cursor:pointer;transition:all .15s}
+.hyr-btn.active{background:#1a3a5c;border-color:#2d5a8e;color:#f97316}
 .seg-btn:hover:not(.active){background:#253548;color:#e2e8f0}
 
 /* RANGO DE DIAS */
@@ -504,6 +635,22 @@ td:first-child{text-align:left;font-weight:600}
 .pl{font-weight:600;min-width:38px;text-align:right}
 .note{font-size:.68rem;color:#445566;margin-top:1px}
 
+/* TABLA OPS */
+.ops-th{background:#0a1520;color:#64748b;font-weight:700;padding:6px 10px;text-align:right;border-bottom:1px solid #0e1e2e;white-space:nowrap;cursor:pointer;user-select:none;font-size:.7rem;letter-spacing:.04em}
+.ops-th:hover{color:#e2e8f0;background:#0d1e2e}
+.ops-th.sort-asc::after{content:' \25B2';color:#f97316}
+.ops-th.sort-desc::after{content:' \25BC';color:#f97316}
+.ops-td{padding:6px 10px;text-align:right;border-bottom:1px solid #080f18;white-space:nowrap}
+.ops-tr:hover td{background:#0d1a26}
+.ops-total td{background:#0c2030;border-top:1px solid #f97316;font-weight:700}
+
+/* OTROS expandable */
+tr.otros-row td:first-child{cursor:pointer}
+tr.otros-row td:first-child::before{content:'\25B6  ';font-size:.7em;color:#f97316}
+tr.otros-row.open td:first-child::before{content:'\25BC  ';font-size:.7em;color:#f97316}
+tr.otros-detail{background:#080f18;font-size:.72rem}
+tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
+
 /* TABS VISTA */
 .view-tabs{display:flex;gap:0;padding:0 24px;background:#040a12;border-bottom:1px solid #0e1e2e}
 .view-tab{background:none;border:none;border-bottom:2px solid transparent;color:#64748b;font-size:.78rem;font-weight:600;padding:10px 18px;cursor:pointer;transition:all .15s}
@@ -523,22 +670,48 @@ td:first-child{text-align:left;font-weight:600}
   <button class="btn btn-dl" onclick="descargarCSV()">&#8659; Descargar CSV</button>
 </header>
 
-<!-- KPI Cards por operación -->
+<!-- KPI Cards + Tabla resumen -->
 <div class="kpi-section">
   <div class="kpi-supertitle">&#9679; Resumen por operación — mes actual</div>
   <div class="kpi-grid" id="kpiGrid"></div>
+  <div style="margin-top:18px">
+    <div class="kpi-supertitle" style="margin-bottom:8px">&#9632; Proyección por operación (según filtro de días)</div>
+    <div style="overflow-x:auto">
+      <table id="tblOps" style="border-collapse:collapse;font-size:.75rem;width:100%;min-width:700px">
+        <thead>
+          <tr id="thrOps">
+            <th class="ops-th" data-ok="label" style="text-align:left">OPERACIÓN</th>
+            <th class="ops-th" data-ok="ej">EJECUTADO</th>
+            <th class="ops-th" data-ok="proy">PROYECCIÓN</th>
+            <th class="ops-th" data-ok="util">UTILIDAD</th>
+            <th class="ops-th" data-ok="margen">MARGEN</th>
+            <th class="ops-th" data-ok="viajes">VIAJES</th>
+          </tr>
+        </thead>
+        <tbody id="tbodyOps"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class="meta-bar" id="metaBar"></div>
 
 <div class="filter-bar">
-  <!-- Segmento -->
-  <div class="filter-group">
-    <span class="filter-label">Segmento</span>
-    <button class="seg-btn active" data-seg="TODOS"    onclick="setSeg(this)">Todos</button>
-    <button class="seg-btn"        data-seg="NAC"      onclick="setSeg(this)">Nacional</button>
-    <button class="seg-btn"        data-seg="CEDI"     onclick="setSeg(this)">CEDI</button>
-    <button class="seg-btn"        data-seg="TL"       onclick="setSeg(this)">Transporte Local</button>
+  <!-- Operacion -->
+  <div class="filter-group" style="flex-wrap:wrap;gap:6px">
+    <span class="filter-label">Operación</span>
+    <button class="seg-btn active" data-op="TODOS"    onclick="setOp(this)">Todos</button>
+    <button class="seg-btn"        data-op="NACIONAL" onclick="setOp(this)">Nacional</button>
+    <button class="seg-btn"        data-op="JEMA"     onclick="setOp(this)">Jerónimo</button>
+    <button class="seg-btn"        data-op="CEDIS"    onclick="setOp(this)">CEDIS</button>
+    <button class="seg-btn"        data-op="COMEX"    onclick="setOp(this)">COMEX &#9660;</button>
+    <!-- Sub-panel COMEX -->
+    <div id="comexSub" style="display:none;width:100%;display:none;gap:4px;margin-top:4px;padding-left:80px">
+      <button class="seg-btn-sub active" data-subop="ALL"    onclick="setSubOp(this)">Todo COMEX</button>
+      <button class="seg-btn-sub"        data-subop="IMPO"   onclick="setSubOp(this)">IMPO</button>
+      <button class="seg-btn-sub"        data-subop="EXPO"   onclick="setSubOp(this)">EXPO</button>
+      <button class="seg-btn-sub"        data-subop="NAL-TL" onclick="setSubOp(this)">Nal-TL</button>
+    </div>
   </div>
 
   <!-- Rango dias -->
@@ -573,6 +746,7 @@ td:first-child{text-align:left;font-weight:600}
 <div class="view-tabs">
   <button class="view-tab active" onclick="setView('tabla',this)">&#9776; Tabla Nacional</button>
   <button class="view-tab" onclick="setView('perdidas',this)">&#9888; Manifiestos a Pérdida</button>
+  <button class="view-tab" onclick="setView('historico',this)">&#9196; Histórico</button>
 </div>
 
 <div id="viewTabla">
@@ -586,8 +760,8 @@ td:first-child{text-align:left;font-weight:600}
         <th data-k="DIF_PROV_PPTO">DIF PROY vs PPTO</th>
         <th data-k="PCT_CUMPL">% CUMPL</th>
         <th data-k="EJECUTADO">EJECUTADO</th>
-        <th data-k="VENTA_MES_ANT">VENTA M. ANT.</th>
-        <th data-k="DIF_DIAS">DIF (DIAS)</th>
+        <th data-k="VENTA_MES_ANT">M. ANT. (mismo rango)</th>
+        <th data-k="DIF_DIAS">EJ. vs M. ANT.</th>
         <th data-k="VIAJES">VIAJES</th>
         <th data-k="M_VIAJES">M. VIAJES</th>
         <th data-k="VENTA_AYER" id="thAyer">VENTA AYER</th>
@@ -610,24 +784,62 @@ td:first-child{text-align:left;font-weight:600}
 
 <!-- Vista Pérdidas -->
 <div id="viewPerdidas" style="display:none;padding:14px 10px;overflow-x:auto">
-  <div style="margin-bottom:10px;color:#94a3b8;font-size:.78rem">
-    Manifiestos donde <b style="color:#ef4444">compra &gt; venta</b> — mes actual, solo NACIONAL
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:10px;flex-wrap:wrap">
+    <span style="color:#94a3b8;font-size:.78rem">Manifiestos donde <b style="color:#ef4444">compra &gt; venta</b></span>
+    <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+      <span style="color:#64748b;font-size:.75rem">Tu nombre:</span>
+      <input id="inputUserName" type="text" placeholder="Ej: Juan Pérez"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#f0c060;border-radius:4px;padding:4px 8px;font-size:.75rem;width:150px"
+        oninput="localStorage.setItem('tc_userName',this.value)">
+    </div>
   </div>
   <table style="width:100%;border-collapse:collapse;min-width:800px;font-size:.77rem">
     <thead>
-      <tr style="background:#1a0d0d">
-        <th style="text-align:left;padding:7px 8px;color:#ef4444;border-bottom:2px solid #3a1010">MANIFIESTO</th>
-        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">CLIENTE</th>
-        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">FECHA</th>
+      <tr id="thrPerd" style="background:#1a0d0d">
+        <th class="perd-th" data-pk="man" style="text-align:left;padding:7px 8px;color:#ef4444;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">MANIFIESTO</th>
+        <th class="perd-th" data-pk="cod" style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">CLIENTE</th>
+        <th class="perd-th" data-pk="fecha" style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">FECHA</th>
         <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">OBs</th>
-        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">VENTA</th>
-        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">COMPRA</th>
-        <th style="padding:7px 8px;color:#ef4444;border-bottom:2px solid #3a1010">PÉRDIDA</th>
-        <th style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010">MARGEN</th>
+        <th class="perd-th" data-pk="venta" style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">VENTA</th>
+        <th class="perd-th" data-pk="compra" style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">COMPRA</th>
+        <th class="perd-th" data-pk="util" style="padding:7px 8px;color:#ef4444;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">PÉRDIDA</th>
+        <th class="perd-th" data-pk="margen" style="padding:7px 8px;color:#94a3b8;border-bottom:2px solid #3a1010;cursor:pointer;user-select:none">MARGEN</th>
+        <th style="padding:7px 8px;color:#f59e0b;border-bottom:2px solid #3a1010;min-width:160px">OBSERVACIÓN</th>
+        <th style="padding:7px 8px;color:#7dd3fc;border-bottom:2px solid #3a1010;min-width:120px">RESPONSABLE</th>
       </tr>
     </thead>
     <tbody id="tbodyPerdidas"></tbody>
   </table>
+</div>
+
+<div id="viewHistorico" style="display:none;padding:14px 10px">
+  <!-- Controles superiores -->
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+    <span style="color:#94a3b8;font-size:.78rem;font-weight:600">Histórico</span>
+    <!-- Filtro año -->
+    <div id="histYearBtns" style="display:flex;gap:4px"></div>
+    <!-- Modo venta/viajes -->
+    <div style="display:flex;gap:0;margin-left:auto;border:1px solid #1e3a4e;border-radius:6px;overflow:hidden">
+      <button class="hist-mode-btn" id="histBtnVenta" onclick="setHistMode('venta',this)" style="background:#1a3a5c;border:none;color:#f97316;font-size:.73rem;font-weight:700;padding:5px 14px;cursor:pointer">$ Venta</button>
+      <button class="hist-mode-btn" id="histBtnViajes" onclick="setHistMode('viajes',this)" style="background:none;border:none;color:#64748b;font-size:.73rem;font-weight:600;padding:5px 14px;cursor:pointer">&#9201; Viajes</button>
+    </div>
+  </div>
+  <!-- Gráficos de operaciones -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">
+    <div class="hcCard" id="hcNac"></div>
+    <div class="hcCard" id="hcJema"></div>
+    <div class="hcCard" id="hcComex"></div>
+    <div class="hcCard" id="hcCedis"></div>
+  </div>
+  <!-- Análisis Inteligente -->
+  <div id="histInsights"></div>
+  <!-- Tabla clientes -->
+  <div style="overflow-x:auto">
+    <table id="tblHistorico" style="border-collapse:collapse;font-size:.76rem;min-width:600px;width:100%">
+      <thead id="theadHistorico"></thead>
+      <tbody id="tbodyHistorico"></tbody>
+    </table>
+  </div>
 </div>
 
 <script>
@@ -664,7 +876,7 @@ function calcFila(cod){
   var pend = window.PENDIENTE[cod] || {monto:0,n:0};
   var m    = window.META || {};
 
-  // Acumular segun segmento y rango de dias
+  // Acumular segun segmento y rango de dias — mes actual
   var V=0, U=0, N=0;
   var segs = curSeg==='TODOS' ? Object.keys(dias) : (dias[curSeg] ? [curSeg] : []);
   segs.forEach(function(s){
@@ -675,12 +887,21 @@ function calcFila(cod){
     }
   });
 
+  // Mes anterior — mismo rango de dias d1-d2
+  var maRng=0;
+  var diasAnt=window.DIARIO_ANT[cod]||{};
+  var segsAnt=curSeg==='TODOS'?Object.keys(diasAnt):(diasAnt[curSeg]?[curSeg]:[]);
+  segsAnt.forEach(function(s){
+    var sd=diasAnt[s]||{};
+    for(var d=d1;d<=d2;d++){var e=sd[String(d)];if(e)maRng+=e[0];}
+  });
+
   var diasRango = d2 - d1 + 1;
   var diasMes   = m.diasMes || 31;
   var PROY  = diasRango > 0 ? V / diasRango * diasMes : 0;
   var DIF_PP = PROY - (pp.PPTO||0);
   var PCT_C  = pp.PPTO > 0 ? PROY / pp.PPTO : 0;
-  var DIF_D  = V - (ma / diasMes * diasRango);
+  var DIF_D  = V - maRng;
   var MAR    = V > 0 ? U / V : 0;
   var PROY_U = PROY * MAR;
   var META_V = Math.max((pp.PPTO||0) - V, 0);
@@ -690,7 +911,7 @@ function calcFila(cod){
     PPTO: pp.PPTO||0, META_UTIL: pp.META_UTIL||0, M_VIAJES: pp.M_VIAJES||0,
     PCT_INTER_M: pp.PCT_INTER_M||0,
     EJECUTADO: V, UTILIDAD: U, VIAJES: N,
-    VENTA_MES_ANT: ma,
+    VENTA_MES_ANT: maRng,
     VENTA_AYER: window.FIJO_AYER[cod]||0,
     VENTA_HOY:  window.FIJO_HOY[cod]||0,
     PROYECCION: PROY, DIF_PROV_PPTO: DIF_PP, PCT_CUMPL: PCT_C,
@@ -727,6 +948,15 @@ function renderRow(r, cls){
 }
 
 function buildTable(){
+  // Operaciones sin tabla de clientes → mostrar mensaje
+  var OPS_SIN_TABLA = {'CEDIS':1,'COMEX':1,'JEMA':1};
+  var tbody = document.getElementById('tbody');
+  if(OPS_SIN_TABLA[curOp]){
+    tbody.innerHTML='<tr><td colspan="19" style="text-align:center;padding:30px;color:#445566;font-size:.8rem">'+
+      '&#8593; Ver tarjeta de operación arriba para los datos de <b style="color:#94a3b8">'+curOp+'</b></td></tr>';
+    document.getElementById('metaBar').innerHTML='';
+    return;
+  }
   var clientes = (window.CLIENTES||[]).filter(function(c){return !excluidos.has(c);});
 
   // Calcular filas
@@ -743,11 +973,11 @@ function buildTable(){
   tbody.innerHTML = '';
   rows.forEach(function(r){ tbody.appendChild(renderRow(r,'')); });
 
-  // Fila OTROS CLIENTES
+  // Fila OTROS CLIENTES (expandable)
   var otros = window.OTROS;
   if(otros){
     var or = {
-      Cod: 'OTROS CLIENTES ('+otros.n+')',
+      Cod: '<span onclick="toggleOtros()" style="cursor:pointer;user-select:none" title="Ver clientes"><span id="otrosArrow" style="margin-right:4px">&#9654;</span>OTROS CLIENTES ('+otros.n+')</span>',
       PPTO: otros.PPTO, META_UTIL: otros.META_UTIL, M_VIAJES: otros.M_VIAJES,
       EJECUTADO:0, UTILIDAD:0, VIAJES:0, VENTA_MES_ANT:0,
       VENTA_AYER:0, VENTA_HOY:0, PROYECCION:0,
@@ -755,7 +985,21 @@ function buildTable(){
       PROY_UTILIDAD:0, PCT_INTER:0, PCT_INTER_M:0,
       META_VENTA_FINAL: otros.PPTO, P_PLANILLAR: otros.P_PLANILLAR||0,
     };
-    tbody.appendChild(renderRow(or,'otros-row'));
+    var orTr=renderRow(or,'otros-row');
+    tbody.appendChild(orTr);
+    // Filas detalle (ocultas inicialmente)
+    var det=otros.detalle||[];
+    det.sort(function(a,b){return b.ej-a.ej;});
+    det.forEach(function(c){
+      var dtr=document.createElement('tr');
+      dtr.className='otros-detail'; dtr.style.display='none';
+      var ef=formatBig(c.ej), pf=formatBig(c.pp||0);
+      dtr.innerHTML=
+        '<td style="padding:4px 8px 4px 32px;text-align:left;color:#7aa8cc">&#9492; '+c.cod+'</td>'+
+        '<td style="padding:4px 8px;color:#445566">'+pf.val+pf.unit+'</td>'+
+        '<td colspan="17" style="padding:4px 8px;color:#56789a">'+ef.val+ef.unit+'</td>';
+      tbody.appendChild(dtr);
+    });
   }
 
   // Totales
@@ -770,7 +1014,7 @@ function buildTable(){
     Cod:'TOTAL', PPTO:totPP, PROYECCION:totPRY,
     DIF_PROV_PPTO:totPRY-totPP, PCT_CUMPL:totPP>0?totPRY/totPP:0,
     EJECUTADO:totV, VENTA_MES_ANT:totMA,
-    DIF_DIAS:totV-(totMA/(window.META.diasMes||31)*(d2-d1+1)),
+    DIF_DIAS:totV-totMA,
     VIAJES:totV0, M_VIAJES: rows.reduce(function(s,r){return s+r.M_VIAJES;},0)+(otros?otros.M_VIAJES:0),
     VENTA_AYER:totAY, VENTA_HOY:totHY,
     META_VENTA_FINAL:totMB, META_UTIL:totMU, UTILIDAD:totU,
@@ -796,11 +1040,49 @@ function buildTable(){
   });
 }
 
-function setSeg(btn){
+function isPerdidasActive(){
+  return document.getElementById('viewPerdidas').style.display !== 'none';
+}
+function isHistoricoActive(){
+  return document.getElementById('viewHistorico').style.display !== 'none';
+}
+
+/* Mapa operacion → curSeg para la tabla Nacional */
+var OP_SEG_MAP = {
+  'TODOS':'TODOS','NACIONAL':'NAC','JEMA':'JEMA',
+  'CEDIS':'__OP__','COMEX':'__OP__'
+};
+var curOp='TODOS', curSubOp='ALL';
+
+function rebuildAll(){
+  buildKPICards();
+  buildOpsTable();
+  buildTable();
+  if(isPerdidasActive()) buildPerdidas();
+  if(isHistoricoActive()) buildHistorico();
+}
+
+function setOp(btn){
   document.querySelectorAll('.seg-btn').forEach(function(b){b.classList.remove('active');});
   btn.classList.add('active');
-  curSeg = btn.getAttribute('data-seg');
-  buildTable();
+  curOp = btn.getAttribute('data-op');
+  curSeg = OP_SEG_MAP[curOp] || 'TODOS';
+  // Mostrar sub-panel COMEX
+  var sub = document.getElementById('comexSub');
+  if(curOp==='COMEX'){
+    sub.style.display='flex';
+  } else {
+    sub.style.display='none';
+    curSubOp='ALL';
+  }
+  rebuildAll();
+}
+
+function setSubOp(btn){
+  document.querySelectorAll('.seg-btn-sub').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  curSubOp = btn.getAttribute('data-subop');
+  rebuildAll();
 }
 
 function recalc(){
@@ -809,7 +1091,7 @@ function recalc(){
   d2 = Math.min(m.diasMes||31, Math.max(d1, parseInt(document.getElementById('diaHasta').value)||d1));
   document.getElementById('diaHasta').value = d2;
   document.getElementById('diasLabel').textContent = '('+( d2-d1+1)+' dias)';
-  buildTable();
+  rebuildAll();
 }
 
 function toggleDD(){
@@ -832,7 +1114,7 @@ function buildClientList(){
     cb.type='checkbox'; cb.value=c; cb.checked=true;
     cb.onchange=function(){
       if(cb.checked) excluidos.delete(c); else excluidos.add(c);
-      buildTable();
+      rebuildAll();
     };
     li.appendChild(cb);
     li.appendChild(document.createTextNode(c));
@@ -845,7 +1127,7 @@ function selAll(v){
     cb.checked=v;
     if(v) excluidos.delete(cb.value); else excluidos.add(cb.value);
   });
-  buildTable();
+  rebuildAll();
 }
 
 function descargarCSV(){
@@ -888,22 +1170,66 @@ function formatBig(v){
   return {val:Math.round(v).toString(),unit:''};
 }
 
+/* ---- Config operaciones ---- */
+var OPS_CFG = [
+  {key:'NACIONAL', cls:'kpi-nac', label:'Nacional',    sub:null,      clientKey:null},
+  {key:'JEMA',     cls:'kpi-ced', label:'Jeronimo M.', sub:null,      clientKey:'JEMA'},
+  {key:'COMEX',    cls:'kpi-exp', label:'COMEX',       clientKey:null, sub:[
+    {key:'IMPO',label:'IMPO'},{key:'EXPO',label:'EXPO'},{key:'NAL-TL',label:'Nal-TL'}
+  ]},
+  {key:'CEDIS',    cls:'kpi-ced', label:'CEDIS',       sub:null,      clientKey:null},
+];
+
 /* ---- KPI Cards ---- */
+function calcNacKPIDynamic(){
+  /* Suma el mes completo de todos los clientes NACIONAL no excluidos (sin SIEMPRE_OTROS) */
+  var V=0,U=0,N=0;
+  var clts=window.CLIENTES||[];
+  clts.forEach(function(c){
+    if(excluidos.has(c)) return;
+    var cdata=window.DIARIO[c]||{};
+    var subs=Object.keys(cdata);
+    for(var si=0;si<subs.length;si++){
+      var dias=cdata[subs[si]];
+      var dks=Object.keys(dias);
+      for(var di=0;di<dks.length;di++){
+        var e=dias[dks[di]];
+        if(e){V+=e[0];U+=e[1];N+=e[2];}
+      }
+    }
+  });
+  return {VENTA:V,UTILIDAD:U,VIAJES:N};
+}
+
 function buildKPICards(){
   var ops=window.OPS_KPI||{};
-  var cfg=[
-    {key:'NACIONAL',cls:'kpi-nac',label:'Nacional'},
-    {key:'IMPO',    cls:'kpi-imp',label:'Importación'},
-    {key:'EXPO',    cls:'kpi-exp',label:'Exportación'},
-    {key:'CEDIS',   cls:'kpi-ced',label:'CEDIS'},
-  ];
   var grid=document.getElementById('kpiGrid');
   grid.innerHTML='';
-  cfg.forEach(function(op){
-    var d=ops[op.key]||{VENTA:0,UTILIDAD:0,VIAJES:0};
+  OPS_CFG.forEach(function(op){
+    if(op.clientKey && excluidos.has(op.clientKey)) return;
+    var d=(op.key==='NACIONAL')?calcNacKPIDynamic():(ops[op.key]||{VENTA:0,UTILIDAD:0,VIAJES:0});
     var margin=d.VENTA>0?((d.UTILIDAD/d.VENTA)*100).toFixed(1)+'% margen':'— margen';
     var vf=formatBig(d.VENTA);
     var uf=formatBig(d.UTILIDAD);
+    var subHtml='';
+    if(op.sub){
+      subHtml='<div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap">';
+      op.sub.forEach(function(s){
+        var sd=ops[s.key]||{VENTA:0};
+        var sf=formatBig(sd.VENTA);
+        subHtml+='<span style="font-size:.65rem;opacity:.6">'+s.label+': '+sf.val+sf.unit+'</span>';
+      });
+      subHtml+='</div>';
+    }
+    var ps=calcPerdidasStats(op.key);
+    var perdHtml='';
+    if(ps&&ps.total>0){
+      perdHtml='<div style="margin-top:8px;padding:5px 8px;background:rgba(239,68,68,.1);border-radius:5px;font-size:.68rem">'+
+        '<span style="color:#ef4444;font-weight:700">&#9888; '+ps.total+' pérd.</span>'+
+        ' <span style="color:#4ade80">&#10003; '+ps.conC+' comentados</span>'+
+        ' <span style="color:#ef4444;opacity:.7">&#9888; '+ps.sinC+' sin comentario</span>'+
+      '</div>';
+    }
     var card=document.createElement('div');
     card.className='kpi-card '+op.cls;
     card.innerHTML=
@@ -915,37 +1241,224 @@ function buildKPICards(){
       '<div class="kpi-stats">'+
         '<div class="kpi-stat"><div class="kpi-stat-val">'+uf.val+' '+uf.unit+'</div><div class="kpi-stat-lbl">Utilidad</div></div>'+
         '<div class="kpi-stat"><div class="kpi-stat-val">'+NUM.format(d.VIAJES)+'</div><div class="kpi-stat-lbl">Viajes</div></div>'+
-      '</div>';
+      '</div>'+subHtml+perdHtml;
     grid.appendChild(card);
   });
 }
+
+/* ---- Calculo proyeccion por operacion ---- */
+function calcOpData(opKey){
+  var keys=opKey==='COMEX'?['IMPO','EXPO','NAL-TL']:[opKey];
+  var V=0,U=0,N=0;
+  keys.forEach(function(k){
+    var daily=window.OPS_DIARIO[k]||{};
+    for(var d=d1;d<=d2;d++){var e=daily[String(d)];if(e){V+=e[0];U+=e[1];N+=e[2];}}
+  });
+  // Si AJOV_MOV excluido, restar su contribucion de NACIONAL
+  if(opKey==='NACIONAL' && excluidos.has('AJOV_MOV')){
+    var ajovD=window.OPS_DIARIO['AJOV_MOV']||{};
+    for(var d=d1;d<=d2;d++){var e=ajovD[String(d)];if(e){V-=e[0];U-=e[1];N-=e[2];}}
+  }
+  var dias=d2-d1+1;
+  var proy=dias>0?V/dias*(window.META.diasMes||31):0;
+  return {V:V,U:U,N:N,proy:proy};
+}
+
+/* ---- Tabla resumen operaciones ---- */
+var opsSortK='ej', opsSortAsc=false;
+function buildOpsTable(){
+  var m=window.META||{};
+  // Si hay sub-op de COMEX activa, calcOpData especial
+  function calcOpFiltered(op){
+    if(op.key==='COMEX' && curOp==='COMEX' && curSubOp!=='ALL'){
+      var keys=[curSubOp];
+      var V=0,U=0,N=0;
+      keys.forEach(function(k){
+        var daily=window.OPS_DIARIO[k]||{};
+        for(var d=d1;d<=d2;d++){var e=daily[String(d)];if(e){V+=e[0];U+=e[1];N+=e[2];}}
+      });
+      var dias=d2-d1+1;
+      var proy=dias>0?V/dias*(window.META.diasMes||31):0;
+      return {V:V,U:U,N:N,proy:proy};
+    }
+    return calcOpData(op.key);
+  }
+  var rows=OPS_CFG.filter(function(op){
+    if(op.clientKey && excluidos.has(op.clientKey)) return false;
+    if(curOp==='TODOS') return true;
+    if(curOp==='COMEX') return op.key==='COMEX';
+    return op.key===curOp;
+  }).map(function(op){
+    var r=calcOpFiltered(op);
+    return {label:op.label,key:op.key,ej:r.V,util:r.U,viajes:r.N,proy:r.proy,
+            margen:r.V>0?r.U/r.V:0};
+  });
+  rows.sort(function(a,b){
+    var va=a[opsSortK],vb=b[opsSortK];
+    if(typeof va==='string') return opsSortAsc?va.localeCompare(vb):vb.localeCompare(va);
+    return opsSortAsc?va-vb:vb-va;
+  });
+  var tbody=document.getElementById('tbodyOps');
+  tbody.innerHTML='';
+  var totEj=0,totProy=0,totUtil=0,totV=0;
+  rows.forEach(function(r){
+    totEj+=r.ej;totProy+=r.proy;totUtil+=r.util;totV+=r.ej;
+    var tr=document.createElement('tr');
+    tr.className='ops-tr';
+    tr.innerHTML=
+      '<td class="ops-td" style="text-align:left;font-weight:600;color:#e2e8f0">'+r.label+'</td>'+
+      '<td class="ops-td">'+COP.format(r.ej)+'</td>'+
+      '<td class="ops-td" style="color:#f97316">'+COP.format(r.proy)+'</td>'+
+      '<td class="ops-td" style="color:#4ade80">'+COP.format(r.util)+'</td>'+
+      '<td class="ops-td">'+(r.margen*100).toFixed(1)+'%</td>'+
+      '<td class="ops-td">'+NUM.format(r.viajes)+'</td>';
+    tbody.appendChild(tr);
+  });
+  var tf=document.createElement('tr');
+  tf.className='ops-total';
+  var totM=totEj>0?totUtil/totEj:0;
+  tf.innerHTML=
+    '<td class="ops-td" style="text-align:left;color:#f97316">TOTAL</td>'+
+    '<td class="ops-td" style="color:#f97316">'+COP.format(totEj)+'</td>'+
+    '<td class="ops-td" style="color:#f97316">'+COP.format(totProy)+'</td>'+
+    '<td class="ops-td" style="color:#4ade80">'+COP.format(totUtil)+'</td>'+
+    '<td class="ops-td">'+(totM*100).toFixed(1)+'%</td>'+
+    '<td class="ops-td"></td>';
+  tbody.appendChild(tf);
+}
+
+// Ordenar tabla ops
+document.addEventListener('DOMContentLoaded',function(){
+  document.querySelectorAll('.ops-th').forEach(function(th){
+    th.addEventListener('click',function(){
+      var k=th.getAttribute('data-ok');
+      document.querySelectorAll('.ops-th').forEach(function(t){t.classList.remove('sort-asc','sort-desc');});
+      if(opsSortK===k){opsSortAsc=!opsSortAsc;}else{opsSortK=k;opsSortAsc=false;}
+      th.classList.add(opsSortAsc?'sort-asc':'sort-desc');
+      buildOpsTable();
+    });
+  });
+  // Ordenar tabla perdidas
+  document.querySelectorAll('.perd-th').forEach(function(th){
+    th.addEventListener('click',function(){
+      var k=th.getAttribute('data-pk');
+      document.querySelectorAll('.perd-th').forEach(function(t){t.style.color='';});
+      if(perdSortK===k){perdSortAsc=!perdSortAsc;}else{perdSortK=k;perdSortAsc=false;}
+      th.style.color='#f97316';
+      buildPerdidas();
+    });
+  });
+});
 
 /* ---- Cambio de vista ---- */
 function setView(v, btn){
   document.querySelectorAll('.view-tab').forEach(function(b){b.classList.remove('active');});
   btn.classList.add('active');
-  document.getElementById('viewTabla').style.display    = v==='tabla'    ? '' : 'none';
-  document.getElementById('viewPerdidas').style.display = v==='perdidas' ? '' : 'none';
-  if(v==='perdidas') buildPerdidas();
+  document.getElementById('viewTabla').style.display     = v==='tabla'     ? '' : 'none';
+  document.getElementById('viewPerdidas').style.display  = v==='perdidas'  ? '' : 'none';
+  document.getElementById('viewHistorico').style.display = v==='historico' ? '' : 'none';
+  if(v==='perdidas'){
+    var inp=document.getElementById('inputUserName');
+    if(inp) inp.value=localStorage.getItem('tc_userName')||'';
+    buildPerdidas();
+  }
+  if(v==='historico') buildHistorico();
 }
 
-/* ---- Tabla manifiestos a pérdida ---- */
+/* ---- Toggle OTROS detalle ---- */
+var otrosOpen=false;
+function toggleOtros(){
+  otrosOpen=!otrosOpen;
+  var arr=document.getElementById('otrosArrow');
+  if(arr) arr.innerHTML=otrosOpen?'&#9660;':'&#9654;';
+  document.querySelectorAll('tr.otros-detail').forEach(function(tr){
+    tr.style.display=otrosOpen?'':'none';
+  });
+}
+
+/* ---- Perdidas sort + observaciones ---- */
+var perdSortK='util', perdSortAsc=true;
+var perdidasObs = JSON.parse(localStorage.getItem('tc_perdidasObs')||'{}');
+// Migrar formato antiguo (string → objeto)
+Object.keys(perdidasObs).forEach(function(k){
+  if(typeof perdidasObs[k]==='string') perdidasObs[k]={text:perdidasObs[k],user:'',ts:''};
+});
+function saveObs(man,field,val){
+  if(!perdidasObs[man]) perdidasObs[man]={text:'',user:'',ts:''};
+  perdidasObs[man][field]=val;
+  perdidasObs[man].ts=new Date().toLocaleString('es-CO');
+  localStorage.setItem('tc_perdidasObs',JSON.stringify(perdidasObs));
+}
+function perdHasComment(man){return !!(perdidasObs[man]&&perdidasObs[man].text&&perdidasObs[man].text.trim());}
+function calcPerdidasStats(opKey){
+  var perd=window.PERDIDAS||[];
+  var CLIENTES_OP_S={'JEMA':1,'AJOV_MOV':1};
+  var filtered=perd.filter(function(r){
+    if(excluidos.has(r.cod)) return false;
+    if(opKey==='JEMA') return r.cod==='JEMA';
+    if(opKey==='NACIONAL'){
+      if(CLIENTES_OP_S[r.cod]) return false;
+      return !r.subseg||r.subseg.indexOf('CED')<0&&r.subseg.indexOf('TL')<0;
+    }
+    return false;
+  });
+  var conC=filtered.filter(function(r){return perdHasComment(r.man);}).length;
+  return {total:filtered.length,conC:conC,sinC:filtered.length-conC};
+}
+
 function buildPerdidas(){
-  var data = window.PERDIDAS || [];
-  var tbody = document.getElementById('tbodyPerdidas');
-  if(tbody.dataset.built) return;
-  tbody.dataset.built = '1';
-  tbody.innerHTML = '';
+  var raw=(window.PERDIDAS||[]);
+  var CLIENTES_OP={'JEMA':1,'AJOV_MOV':1};
+  var data=raw.filter(function(r){
+    if(r.dia && (r.dia<d1||r.dia>d2)) return false;
+    if(excluidos.has(r.cod)) return false;
+    // Filtro por operacion
+    if(curOp==='JEMA'||curOp==='AJOV_MOV') return r.cod===curOp;
+    if(curOp==='NACIONAL'){
+      // Excluir clientes de operacion y cuentas CED/TL
+      if(CLIENTES_OP[r.cod]) return false;
+      return !r.subseg||r.subseg.indexOf('CED')<0&&r.subseg.indexOf('TL')<0;
+    }
+    if(curOp==='CEDIS'||curOp==='COMEX') return false;
+    // TODOS: excluir solo los clientes que no están en ninguna op visible
+    return true;
+  }).slice();
+
+  var tbody=document.getElementById('tbodyPerdidas');
+  tbody.innerHTML='';
   if(!data.length){
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:#445566">Sin manifiestos a pérdida en el mes actual</td></tr>';
+    tbody.innerHTML='<tr><td colspan="9" style="text-align:center;padding:20px;color:#445566">Sin manifiestos a pérdida con los filtros actuales</td></tr>';
     return;
   }
-  var totalPerd = 0;
+  data.sort(function(a,b){
+    var va=a[perdSortK],vb=b[perdSortK];
+    if(typeof va==='string') return perdSortAsc?va.localeCompare(vb):vb.localeCompare(va);
+    return perdSortAsc?va-vb:vb-va;
+  });
+  var totalPerd=0, totalVenta=0, totalCompra=0;
   data.forEach(function(r){
-    totalPerd += r.util;
-    var tr = document.createElement('tr');
-    tr.style.borderBottom = '1px solid #1a1010';
-    tr.innerHTML =
+    totalPerd+=r.util; totalVenta+=r.venta; totalCompra+=r.compra;
+    var tr=document.createElement('tr');
+    tr.style.borderBottom='1px solid #1a1010';
+    var obsVal=perdidasObs[r.man]||'';
+    var saved=perdidasObs[r.man]||{text:'',user:'',ts:''};
+    var tdObs=document.createElement('td');
+    tdObs.style.cssText='padding:4px 6px;vertical-align:top';
+    var ta=document.createElement('textarea');
+    ta.className='obs-input'; ta.rows=1; ta.value=saved.text||'';
+    ta.placeholder='Observación...';
+    ta.addEventListener('input',function(){saveObs(r.man,'text',ta.value);});
+    tdObs.appendChild(ta);
+    if(saved.ts) tdObs.appendChild(Object.assign(document.createElement('div'),
+      {style:'font-size:.62rem;color:#334155;margin-top:2px',textContent:saved.ts}));
+    var tdUser=document.createElement('td');
+    tdUser.style.cssText='padding:4px 6px;vertical-align:top';
+    var inp=document.createElement('input');
+    inp.type='text'; inp.className='obs-input'; inp.value=saved.user||'';
+    inp.placeholder='Nombre...';
+    inp.addEventListener('input',function(){saveObs(r.man,'user',inp.value);});
+    tdUser.appendChild(inp);
+    tr.innerHTML=
       '<td style="text-align:left;padding:6px 8px;font-weight:600;color:#fca5a5">'+r.man+'</td>'+
       '<td style="padding:6px 8px;color:#94a3b8">'+r.cod+'</td>'+
       '<td style="padding:6px 8px;color:#64748b">'+r.fecha+'</td>'+
@@ -954,15 +1467,484 @@ function buildPerdidas(){
       '<td style="padding:6px 8px;color:#fbbf24">'+COP.format(r.compra)+'</td>'+
       '<td style="padding:6px 8px;color:#ef4444;font-weight:700">'+COP.format(r.util)+'</td>'+
       '<td style="padding:6px 8px;color:#ef4444">'+(r.margen*100).toFixed(1)+'%</td>';
+    tr.appendChild(tdObs);
+    tr.appendChild(tdUser);
     tbody.appendChild(tr);
   });
-  var tf = document.createElement('tr');
-  tf.style.cssText = 'background:#1a0505;border-top:2px solid #ef4444;font-weight:700';
-  tf.innerHTML =
+  var tf=document.createElement('tr');
+  tf.style.cssText='background:#1a0505;border-top:2px solid #ef4444;font-weight:700';
+  tf.innerHTML=
     '<td colspan="4" style="text-align:left;padding:6px 8px;color:#ef4444">TOTAL ('+data.length+' manifiestos)</td>'+
-    '<td colspan="3" style="padding:6px 8px;color:#ef4444">'+COP.format(totalPerd)+'</td>'+
-    '<td></td>';
+    '<td style="padding:6px 8px;color:#e2e8f0">'+COP.format(totalVenta)+'</td>'+
+    '<td style="padding:6px 8px;color:#fbbf24">'+COP.format(totalCompra)+'</td>'+
+    '<td style="padding:6px 8px;color:#ef4444">'+COP.format(totalPerd)+'</td>'+
+    '<td style="padding:6px 8px;color:#ef4444">'+(totalVenta>0?(totalPerd/totalVenta*100).toFixed(1):'0')+'%</td>'+
+    '<td colspan="2"></td>';
   tbody.appendChild(tf);
+}
+
+/* ---- HISTORICO ---- */
+var histMode='venta';
+var histYear='2026';
+var histSortIdx=-1, histSortAsc=false;
+
+function setHistMode(mode, btn){
+  histMode=mode;
+  document.querySelectorAll('.hist-mode-btn').forEach(function(b){
+    b.style.background='none'; b.style.color='#64748b';
+  });
+  btn.style.background='#1a3a5c'; btn.style.color='#f97316';
+  buildHistorico();
+}
+
+function setHistYear(yr, btn){
+  histYear=yr;
+  document.querySelectorAll('.hyr-btn').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  histSortIdx=-1;
+  buildHistorico();
+}
+
+function sparkline(vals){
+  if(!vals||vals.length<2) return '';
+  var max=Math.max.apply(null,vals), min=Math.min.apply(null,vals);
+  var w=60,h=20,pad=2;
+  if(max===min) return '<svg width="'+w+'" height="'+h+'"><line x1="2" y1="10" x2="58" y2="10" stroke="#4ade80" stroke-width="1.5"/></svg>';
+  var pts=vals.map(function(v,i){
+    var x=pad+(i/(vals.length-1))*(w-2*pad);
+    var y=(h-pad)-((v-min)/(max-min))*(h-2*pad);
+    return x.toFixed(1)+','+y.toFixed(1);
+  });
+  var last=vals[vals.length-1], prev=vals[vals.length-2];
+  var col=last>=prev?'#4ade80':'#ef4444';
+  var lp=pts[pts.length-1].split(',');
+  return '<svg width="'+w+'" height="'+h+'" style="display:block;overflow:visible">'+
+    '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'+
+    '<circle cx="'+lp[0]+'" cy="'+lp[1]+'" r="2.5" fill="'+col+'"/>'+
+    '</svg>';
+}
+
+function mesLabel(m){
+  var mNames=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  var y,mo;
+  if(m.indexOf('-')>0){var p=m.split('-');y=p[0];mo=parseInt(p[1])-1;}
+  else{y=m.slice(0,4);mo=parseInt(m.slice(4))-1;}
+  return mNames[mo]+' '+y.slice(2);
+}
+
+function mesYear(m){
+  return m.indexOf('-')>0?m.split('-')[0]:m.slice(0,4);
+}
+
+function buildHistorico(){
+  var raw=window.HISTORICO||{};
+  // Obtener todos los meses disponibles
+  var mesesSet={};
+  Object.keys(raw).forEach(function(cod){
+    Object.keys(raw[cod]).forEach(function(m){ mesesSet[m]=1; });
+  });
+  var allMeses=Object.keys(mesesSet).sort();
+
+  // Botones de año (dinámicos)
+  var yearContainer=document.getElementById('histYearBtns');
+  if(yearContainer && !yearContainer.dataset.built){
+    var yearsSet={};
+    allMeses.forEach(function(m){ yearsSet[mesYear(m)]=1; });
+    var years=Object.keys(yearsSet).sort();
+    var yHtml='<button class="hyr-btn'+(histYear===''?' active':'')+'" onclick="setHistYear(\'\',this)">Todos</button>';
+    years.forEach(function(y){
+      yHtml+='<button class="hyr-btn'+(histYear===y?' active':'')+'" onclick="setHistYear(\''+y+'\',this)">'+y+'</button>';
+    });
+    yearContainer.innerHTML=yHtml;
+    yearContainer.dataset.built='1';
+  }
+
+  // Filtrar por año seleccionado
+  var meses=histYear?allMeses.filter(function(m){return mesYear(m)===histYear;}):allMeses;
+  if(meses.length>13) meses=meses.slice(meses.length-13);
+
+  // Clientes filtrados (excluidos, misma logica que tabla)
+  var clientes=(window.CLIENTES||[]).filter(function(c){ return !excluidos.has(c); });
+
+  // Sumar valor por cliente por mes (respetando rango d1-d2)
+  function getVal(cod,mes){
+    var mdata=(raw[cod]||{})[mes]||{};
+    var v=0;
+    for(var d=d1;d<=d2;d++){
+      var e=mdata[String(d)];
+      if(e) v+=histMode==='venta'?e[0]:e[1];
+    }
+    return v;
+  }
+
+  // Construir filas
+  var rows=clientes.map(function(cod){
+    var vals=meses.map(function(m){ return getVal(cod,m); });
+    return {cod:cod, vals:vals};
+  }).filter(function(r){ return r.vals.some(function(v){return v>0;}); });
+
+  // Ordenar
+  if(histSortIdx===-1){
+    rows.sort(function(a,b){
+      var va=a.vals[a.vals.length-1]||0, vb=b.vals[b.vals.length-1]||0;
+      return vb-va;
+    });
+  } else if(histSortIdx===0){
+    rows.sort(function(a,b){ return histSortAsc?a.cod.localeCompare(b.cod):b.cod.localeCompare(a.cod); });
+  } else {
+    var si=histSortIdx-1;
+    rows.sort(function(a,b){ var d=(a.vals[si]||0)-(b.vals[si]||0); return histSortAsc?d:-d; });
+  }
+
+  // Header
+  var thead=document.getElementById('theadHistorico');
+  var thHtml='<tr style="background:#0d1a26">';
+  thHtml+='<th style="text-align:left;padding:6px 10px;color:#64748b;font-size:.72rem;border-bottom:2px solid #1e3a4e;cursor:pointer;white-space:nowrap" onclick="histColSort(0)">CLIENTE</th>';
+  meses.forEach(function(m,i){
+    thHtml+='<th style="text-align:right;padding:6px 8px;color:#94a3b8;font-size:.72rem;border-bottom:2px solid #1e3a4e;cursor:pointer;white-space:nowrap" onclick="histColSort('+(i+1)+')">'+mesLabel(m)+'</th>';
+  });
+  thHtml+='<th style="text-align:right;padding:6px 8px;color:#f97316;font-size:.72rem;border-bottom:2px solid #1e3a4e;white-space:nowrap">vs Ant.</th>';
+  thHtml+='<th style="text-align:right;padding:6px 8px;color:#64748b;font-size:.72rem;border-bottom:2px solid #1e3a4e;white-space:nowrap">Dif.</th>';
+  thHtml+='<th style="text-align:center;padding:6px 10px;color:#64748b;font-size:.72rem;border-bottom:2px solid #1e3a4e">Tendencia</th>';
+  thHtml+='</tr>';
+  thead.innerHTML=thHtml;
+
+  // Body
+  var tbody=document.getElementById('tbodyHistorico');
+  tbody.innerHTML='';
+  if(!rows.length){
+    tbody.innerHTML='<tr><td colspan="'+(meses.length+4)+'" style="text-align:center;padding:20px;color:#445566">Sin datos históricos disponibles</td></tr>';
+    return;
+  }
+
+  // Totales por mes
+  var totals=meses.map(function(_,i){ return rows.reduce(function(s,r){return s+(r.vals[i]||0);},0); });
+
+  rows.forEach(function(r,ri){
+    var isMes=ri%2===0;
+    var tr=document.createElement('tr');
+    tr.style.cssText='border-bottom:1px solid #0e1e2e;'+(isMes?'background:#060f18':'background:#040a12');
+    var last=r.vals[r.vals.length-1]||0;
+    var prev=r.vals.length>1?(r.vals[r.vals.length-2]||0):0;
+    var dif=last-prev;
+    var pct=prev>0?(dif/prev*100):0;
+    var difCol=dif>=0?'#4ade80':'#ef4444';
+    var pctStr=(dif>=0?'+':'')+pct.toFixed(1)+'%';
+    var html='<td style="text-align:left;padding:5px 10px;font-weight:600;color:#e2e8f0;white-space:nowrap">'+r.cod+'</td>';
+    r.vals.forEach(function(v){
+      html+='<td style="text-align:right;padding:5px 8px;color:#cbd5e1;white-space:nowrap">';
+      if(v>0) html+=histMode==='venta'?formatCopCompact(v):NUM.format(v);
+      else html+='<span style="color:#334155">-</span>';
+      html+='</td>';
+    });
+    html+='<td style="text-align:right;padding:5px 8px;color:'+difCol+';font-weight:700;white-space:nowrap">'+pctStr+'</td>';
+    html+='<td style="text-align:right;padding:5px 8px;color:'+difCol+';white-space:nowrap">';
+    if(dif!==0) html+=(histMode==='venta'?formatCopCompact(Math.abs(dif)):NUM.format(Math.abs(dif)));
+    html+='</td>';
+    html+='<td style="text-align:center;padding:5px 8px">'+sparkline(r.vals.filter(function(v){return v>0;}))+' </td>';
+    tr.innerHTML=html;
+    tbody.appendChild(tr);
+  });
+
+  // Fila totales
+  var tf=document.createElement('tr');
+  tf.style.cssText='background:#1a2d40;border-top:2px solid #2d4a6a;font-weight:700';
+  var tlast=totals[totals.length-1]||0;
+  var tprev=totals.length>1?(totals[totals.length-2]||0):0;
+  var tdif=tlast-tprev;
+  var tcol=tdif>=0?'#4ade80':'#ef4444';
+  var tpct=tprev>0?(tdif/tprev*100):0;
+  var thtml='<td style="text-align:left;padding:6px 10px;color:#f97316">TOTAL</td>';
+  totals.forEach(function(v){
+    thtml+='<td style="text-align:right;padding:6px 8px;color:#f0c060">'+(histMode==='venta'?formatCopCompact(v):NUM.format(v))+'</td>';
+  });
+  thtml+='<td style="text-align:right;padding:6px 8px;color:'+tcol+'">'+(tdif>=0?'+':'')+tpct.toFixed(1)+'%</td>';
+  thtml+='<td style="text-align:right;padding:6px 8px;color:'+tcol+'">'+(histMode==='venta'?formatCopCompact(Math.abs(tdif)):NUM.format(Math.abs(tdif)))+'</td>';
+  thtml+='<td></td>';
+  tf.innerHTML=thtml;
+  tbody.appendChild(tf);
+
+  buildHistCharts();
+  buildInsights();
+}
+
+function histColSort(idx){
+  if(histSortIdx===idx) histSortAsc=!histSortAsc;
+  else{histSortIdx=idx; histSortAsc=idx===0;}
+  buildHistorico();
+}
+
+function formatCopCompact(v){
+  if(!v&&v!==0) return '-';
+  v=Math.round(v);
+  if(Math.abs(v)>=1000000000) return (v/1000000000).toFixed(1)+'B';
+  if(Math.abs(v)>=1000000) return (v/1000000).toFixed(1)+'M';
+  if(Math.abs(v)>=1000) return (v/1000).toFixed(0)+'K';
+  return NUM.format(v);
+}
+
+/* ---- Gráficos de operaciones ---- */
+function opsHistMeses(keys){
+  var ms={}, oph=window.OPS_HISTORICO||{};
+  keys.forEach(function(k){Object.keys(oph[k]||{}).forEach(function(m){ms[m]=1;});});
+  var arr=Object.keys(ms).sort();
+  if(histYear) arr=arr.filter(function(m){return mesYear(m)===histYear;});
+  return arr;
+}
+
+function opsHistVal(key, mes){
+  var mdata=((window.OPS_HISTORICO||{})[key]||{})[mes]||{};
+  var v=0;
+  for(var d=d1;d<=d2;d++){var e=mdata[String(d)];if(e)v+=histMode==='venta'?e[0]:e[2];}
+  return v;
+}
+
+function getClientMonthVal(cod, mes){
+  var cdata=((window.HISTORICO||{})[cod]||{})[mes]||{};
+  var v=0;
+  for(var d=d1;d<=d2;d++){var e=cdata[String(d)];if(e)v+=histMode==='venta'?e[0]:e[1];}
+  return v;
+}
+
+function drawBarSvg(meses, series, gid){
+  var VW=280,VH=100,pL=6,pB=19,pT=16,pR=10;
+  var cW=VW-pL-pR, cH=VH-pT-pB;
+  var n=meses.length;
+  var noData='<svg viewBox="0 0 '+VW+' '+VH+'" width="100%"><text x="'+(VW/2)+'" y="'+(VH/2)+'" text-anchor="middle" fill="#334155" font-size="10">Sin datos</text></svg>';
+  if(!n) return noData;
+  var totals=meses.map(function(_,i){var s=0;series.forEach(function(sr){s+=sr.vals[i]||0;});return s;});
+  var maxV=Math.max.apply(null,totals);
+  if(!maxV) return noData;
+  var avg=totals.reduce(function(a,b){return a+b;},0)/n;
+  var avgY=(VH-pB)-((avg/maxV)*cH);
+  var gW=cW/n, bW=Math.max(3,gW*0.58);
+  var uid=gid||'g0';
+
+  var svg='<svg viewBox="0 0 '+VW+' '+VH+'" width="100%" style="display:block;overflow:visible">';
+  /* degradados */
+  svg+='<defs>';
+  series.forEach(function(sr,si){
+    svg+='<linearGradient id="'+uid+'_'+si+'" x1="0" y1="0" x2="0" y2="1">'+
+      '<stop offset="0%" stop-color="'+sr.color+'" stop-opacity="0.9"/>'+
+      '<stop offset="100%" stop-color="'+sr.color+'" stop-opacity="0.2"/>'+
+      '</linearGradient>';
+    svg+='<filter id="'+uid+'_glow'+si+'"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>';
+  });
+  svg+='</defs>';
+  /* grid sutil */
+  for(var g=1;g<=3;g++){var gy=VH-pB-(cH/3*g);svg+='<line x1="'+pL+'" y1="'+gy.toFixed(1)+'" x2="'+(VW-pR+8)+'" y2="'+gy.toFixed(1)+'" stroke="#0d1a26" stroke-width="0.5"/>';}
+  /* linea promedio */
+  svg+='<line x1="'+pL+'" y1="'+avgY.toFixed(1)+'" x2="'+(VW-pR+6)+'" y2="'+avgY.toFixed(1)+'" stroke="#475569" stroke-width="0.8" stroke-dasharray="2.5,2.5"/>';
+  svg+='<text x="'+(VW-pR+8)+'" y="'+(avgY+3).toFixed(1)+'" fill="#475569" font-size="7">Ø</text>';
+
+  for(var i=0;i<n;i++){
+    var cx=pL+i*gW+gW/2, bx=cx-bW/2, bot=VH-pB, ys=bot, tH=0;
+    var isLast=(i===n-1);
+    series.forEach(function(sr,si){
+      var v=sr.vals[i]||0; if(v<=0)return;
+      var bh=(v/maxV)*cH; ys-=bh; tH+=bh;
+      var fill=series.length===1?'url(#'+uid+'_'+si+')':sr.color+(isLast?'dd':'88');
+      var extra=isLast?' stroke="'+sr.color+'" stroke-width="1"':'';
+      var filt=isLast&&series.length===1?' filter="url(#'+uid+'_glow'+si+')"':'';
+      svg+='<rect x="'+bx.toFixed(1)+'" y="'+ys.toFixed(1)+'" width="'+bW.toFixed(1)+'" height="'+bh.toFixed(1)+'" fill="'+fill+'" rx="2"'+extra+filt+'/>';
+    });
+    /* etiqueta valor encima de TODAS las barras */
+    if(tH>0){
+      var sum=0; series.forEach(function(sr){sum+=sr.vals[i]||0;});
+      var lCol=isLast?'#f0c060':'#475569';
+      var lW=isLast?' font-weight="bold"':'';
+      var lSz=isLast?'8.5':'7.5';
+      svg+='<text x="'+cx.toFixed(1)+'" y="'+(bot-tH-3).toFixed(1)+'" text-anchor="middle" fill="'+lCol+'" font-size="'+lSz+'"'+lW+'>'+formatCopCompact(sum)+'</text>';
+    }
+    /* etiqueta mes */
+    var mCol=isLast?'#64748b':'#2d3d4d';
+    svg+='<text x="'+cx.toFixed(1)+'" y="'+(VH-5)+'" text-anchor="middle" fill="'+mCol+'" font-size="7.5">'+mesLabel(meses[i])+'</text>';
+  }
+  svg+='</svg>';
+  return svg;
+}
+
+function trendBadge(cur, prev){
+  if(!prev||!cur) return '';
+  var pct=(cur-prev)/prev*100;
+  var up=pct>=0, col=up?'#4ade80':'#ef4444', arr=up?'▲':'▼';
+  return '<span style="font-size:.65rem;font-weight:700;color:'+col+';margin-left:6px">'+arr+' '+Math.abs(pct).toFixed(1)+'%</span>';
+}
+
+function buildHistCharts(){
+  function lastTwo(vals){return vals.length>=2?[vals[vals.length-1],vals[vals.length-2]]:[vals[0]||0,0];}
+
+  /* NACIONAL */
+  var nacM=opsHistMeses(['NACIONAL']), nacV=nacM.map(function(m){return opsHistVal('NACIONAL',m);});
+  var nlt=lastTwo(nacV);
+  document.getElementById('hcNac').innerHTML=
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">'+
+    '<span style="font-size:.7rem;font-weight:700;color:#f97316;letter-spacing:.03em">NACIONAL</span>'+
+    '<span style="font-size:.85rem;font-weight:800;color:#f0c060">'+formatCopCompact(nlt[0])+trendBadge(nlt[0],nlt[1])+'</span>'+
+    '</div>'+drawBarSvg(nacM,[{vals:nacV,color:'#f97316'}],'gnac')+
+    '<div style="font-size:.65rem;color:#334155;margin-top:2px">Ø prom: '+formatCopCompact(nacV.length?nacV.reduce(function(a,b){return a+b;},0)/nacV.length:0)+'</div>';
+
+  /* JEMA */
+  var jemM=opsHistMeses(['JEMA']), jemV=jemM.map(function(m){return opsHistVal('JEMA',m);});
+  var jlt=lastTwo(jemV);
+  document.getElementById('hcJema').innerHTML=
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">'+
+    '<span style="font-size:.7rem;font-weight:700;color:#22c55e;letter-spacing:.03em">JERÓNIMO</span>'+
+    '<span style="font-size:.85rem;font-weight:800;color:#f0c060">'+formatCopCompact(jlt[0])+trendBadge(jlt[0],jlt[1])+'</span>'+
+    '</div>'+drawBarSvg(jemM,[{vals:jemV,color:'#22c55e'}],'gjem')+
+    '<div style="font-size:.65rem;color:#334155;margin-top:2px">Ø prom: '+formatCopCompact(jemV.length?jemV.reduce(function(a,b){return a+b;},0)/jemV.length:0)+'</div>';
+
+  /* COMEX */
+  var cxM=opsHistMeses(['IMPO','EXPO','NAL-TL']);
+  var imV=cxM.map(function(m){return opsHistVal('IMPO',m);}),
+      exV=cxM.map(function(m){return opsHistVal('EXPO',m);}),
+      tlV=cxM.map(function(m){return opsHistVal('NAL-TL',m);});
+  var cxTot=cxM.map(function(_,i){return (imV[i]||0)+(exV[i]||0)+(tlV[i]||0);});
+  var clt=lastTwo(cxTot);
+  var legH='<span style="font-size:.62rem;color:#475569">'+
+    '<span style="background:#3b82f6;display:inline-block;width:7px;height:7px;border-radius:1px;margin-right:2px;vertical-align:middle"></span>IMPO '+
+    '<span style="background:#8b5cf6;display:inline-block;width:7px;height:7px;border-radius:1px;margin:0 2px 0 6px;vertical-align:middle"></span>EXPO '+
+    '<span style="background:#06b6d4;display:inline-block;width:7px;height:7px;border-radius:1px;margin:0 2px 0 6px;vertical-align:middle"></span>Nal-TL</span>';
+  document.getElementById('hcComex').innerHTML=
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">'+
+    '<span style="font-size:.7rem;font-weight:700;color:#8b5cf6;letter-spacing:.03em">COMEX</span>'+
+    '<span style="font-size:.85rem;font-weight:800;color:#f0c060">'+formatCopCompact(clt[0])+trendBadge(clt[0],clt[1])+'</span>'+
+    '</div><div style="margin-bottom:3px">'+legH+'</div>'+
+    drawBarSvg(cxM,[{vals:imV,color:'#3b82f6'},{vals:exV,color:'#8b5cf6'},{vals:tlV,color:'#06b6d4'}],'gcx')+
+    '<div style="font-size:.65rem;color:#334155;margin-top:2px">Ø prom: '+formatCopCompact(cxTot.length?cxTot.reduce(function(a,b){return a+b;},0)/cxTot.length:0)+'</div>';
+
+  /* CEDIS */
+  var cdM=opsHistMeses(['CEDIS']), cdV=cdM.map(function(m){return opsHistVal('CEDIS',m);});
+  var cdlt=lastTwo(cdV);
+  document.getElementById('hcCedis').innerHTML=
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">'+
+    '<span style="font-size:.7rem;font-weight:700;color:#fbbf24;letter-spacing:.03em">CEDIS</span>'+
+    '<span style="font-size:.85rem;font-weight:800;color:#f0c060">'+formatCopCompact(cdlt[0])+trendBadge(cdlt[0],cdlt[1])+'</span>'+
+    '</div>'+drawBarSvg(cdM,[{vals:cdV,color:'#fbbf24'}],'gcd')+
+    '<div style="font-size:.65rem;color:#334155;margin-top:2px">Ø prom: '+formatCopCompact(cdV.length?cdV.reduce(function(a,b){return a+b;},0)/cdV.length:0)+'</div>';
+}
+
+/* ---- Análisis Inteligente ---- */
+function buildInsights(){
+  var el=document.getElementById('histInsights');
+  if(!el) return;
+  var nacM=opsHistMeses(['NACIONAL']);
+  if(nacM.length<2){el.innerHTML='';return;}
+  var lastM=nacM[nacM.length-1], prevM=nacM[nacM.length-2];
+  var lLbl=mesLabel(lastM), pLbl=mesLabel(prevM);
+
+  /* Totales por operacion */
+  function opTotal(keys, mes){return keys.reduce(function(s,k){return s+opsHistVal(k,mes);},0);}
+  var ops=[
+    {label:'Nacional', keys:['NACIONAL'], col:'#f97316'},
+    {label:'Jerónimo', keys:['JEMA'], col:'#22c55e'},
+    {label:'COMEX',    keys:['IMPO','EXPO','NAL-TL'], col:'#8b5cf6'},
+    {label:'CEDIS',    keys:['CEDIS'], col:'#fbbf24'}
+  ];
+
+  /* Análisis por cliente de NACIONAL */
+  var clientes=(window.CLIENTES||[]).filter(function(c){return !excluidos.has(c);});
+  var cdata=clientes.map(function(cod){
+    var last=getClientMonthVal(cod,lastM), prev=getClientMonthVal(cod,prevM);
+    var dif=last-prev, pct=prev>0?(dif/prev*100):(last>0?100:0);
+    return {cod:cod,last:last,prev:prev,dif:dif,pct:pct};
+  }).filter(function(c){return c.last>0||c.prev>0;});
+
+  var nacLast=opTotal(['NACIONAL'],lastM), nacPrev=opTotal(['NACIONAL'],prevM);
+  var nacDif=nacLast-nacPrev, nacPct=nacPrev>0?(nacDif/nacPrev*100):0;
+  var nacUp=nacDif>=0;
+
+  /* Top declines & growths */
+  var declining=cdata.filter(function(c){return c.dif<-500000;})
+    .sort(function(a,b){return a.dif-b.dif;}).slice(0,5);
+  var growing=cdata.filter(function(c){return c.dif>500000&&c.prev>0;})
+    .sort(function(a,b){return b.dif-a.dif;}).slice(0,3);
+  var newC=cdata.filter(function(c){return c.prev<500000&&c.last>2000000;}).slice(0,3);
+  var lostC=cdata.filter(function(c){return c.prev>2000000&&c.last<500000;}).slice(0,3);
+
+  /* Mes con mejor venta en el año */
+  var allV=nacM.map(function(m){return opTotal(['NACIONAL'],m);});
+  var bestIdx=allV.indexOf(Math.max.apply(null,allV));
+  var bestM=nacM[bestIdx];
+
+  /* Calcular cuántos meses consecutivos baja */
+  var streak=0;
+  for(var i=allV.length-1;i>=1;i--){if(allV[i]<allV[i-1])streak++;else break;}
+
+  /* Construir HTML */
+  var nacSign=nacUp?'+':'';
+  var nacCol=nacUp?'#4ade80':'#ef4444';
+  var nacArrow=nacUp?'▲':'▼';
+
+  var html='<div style="background:linear-gradient(135deg,#060f18 0%,#0b1928 100%);border:1px solid '+(nacUp?'#1e4a2e':'#4a1e1e')+';border-left:3px solid '+nacCol+';border-radius:8px;padding:14px 16px;margin-bottom:16px">';
+  html+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
+  html+='<span style="font-size:.85rem;font-weight:800;color:'+nacCol+'">'+nacArrow+' Nacional '+lLbl+' vs '+pLbl+'</span>';
+  html+='<span style="font-size:1rem;font-weight:900;color:'+nacCol+'">'+nacSign+formatCopCompact(nacDif)+'</span>';
+  html+='<span style="font-size:.75rem;color:'+nacCol+';opacity:.8">'+nacSign+nacPct.toFixed(1)+'%</span>';
+  html+='</div>';
+
+  /* Resumen general de operaciones */
+  html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
+  ops.forEach(function(op){
+    var last=opTotal(op.keys,lastM), prev=opTotal(op.keys,prevM);
+    var d=last-prev, p=prev>0?(d/prev*100):0;
+    var c=d>=0?'#4ade80':'#ef4444', a=d>=0?'▲':'▼';
+    html+='<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:5px;padding:4px 10px;font-size:.68rem">';
+    html+='<span style="color:'+op.col+';font-weight:700">'+op.label+'</span>';
+    html+=' <span style="color:'+c+'">'+a+' '+Math.abs(p).toFixed(1)+'%</span>';
+    html+='</div>';
+  });
+  html+='</div>';
+
+  /* Clientes que más bajaron */
+  if(declining.length){
+    var totalDecl=declining.reduce(function(s,c){return s+c.dif;},0);
+    html+='<div style="margin-bottom:10px">';
+    html+='<div style="font-size:.7rem;font-weight:700;color:#ef4444;margin-bottom:6px">📉 Principales caídas en Nacional ('+lLbl+')</div>';
+    declining.forEach(function(c){
+      var pct=Math.abs(c.pct), barW=Math.min(100,Math.abs(c.dif/declining[0].dif)*100);
+      var share=nacDif!==0?(c.dif/nacDif*100):0;
+      html+='<div style="margin-bottom:5px">';
+      html+='<div style="display:flex;justify-content:space-between;font-size:.7rem;margin-bottom:2px">';
+      html+='<span style="color:#e2e8f0;font-weight:600">'+c.cod+'</span>';
+      html+='<span style="color:#ef4444">'+formatCopCompact(c.dif)+' &nbsp;<span style="color:#64748b">-'+pct.toFixed(0)+'% · '+Math.abs(share).toFixed(0)+'% del total</span></span>';
+      html+='</div>';
+      html+='<div style="background:#1a0d0d;border-radius:2px;height:4px"><div style="background:#ef4444;border-radius:2px;height:4px;width:'+barW.toFixed(0)+'%;transition:width .3s"></div></div>';
+      html+='</div>';
+    });
+    html+='<div style="font-size:.65rem;color:#475569;margin-top:4px">Estos '+declining.length+' clientes explican '+formatCopCompact(totalDecl)+' de la variación ('+nacDif!==0?(totalDecl/nacDif*100).toFixed(0)+'%':'—'+')</div>';
+    html+='</div>';
+  }
+
+  /* Clientes que subieron */
+  if(growing.length){
+    html+='<div style="margin-bottom:10px">';
+    html+='<div style="font-size:.7rem;font-weight:700;color:#4ade80;margin-bottom:6px">📈 Clientes que subieron</div>';
+    html+='<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    growing.forEach(function(c){
+      html+='<div style="background:#0d2a1a;border:1px solid #1e4a2e;border-radius:5px;padding:3px 10px;font-size:.68rem">';
+      html+='<span style="color:#e2e8f0;font-weight:600">'+c.cod+'</span>';
+      html+=' <span style="color:#4ade80">+'+formatCopCompact(c.dif)+'</span>';
+      html+='</div>';
+    });
+    html+='</div></div>';
+  }
+
+  /* Alertas */
+  var alerts=[];
+  if(lostC.length) alerts.push('⚠️ Sin actividad este mes (tenían el anterior): <b style="color:#fbbf24">'+lostC.map(function(c){return c.cod;}).join(', ')+'</b>');
+  if(newC.length)  alerts.push('✅ Actividad nueva o recuperada: <b style="color:#4ade80">'+newC.map(function(c){return c.cod;}).join(', ')+'</b>');
+  if(streak>=2)    alerts.push('🔴 Nacional lleva <b style="color:#ef4444">'+streak+' meses consecutivos</b> a la baja');
+  if(bestIdx===nacM.length-1) alerts.push('🏆 <b style="color:#f0c060">'+lLbl+' es el mejor mes del año</b> en Nacional');
+  else if(bestM)  alerts.push('📌 El mejor mes del año fue <b style="color:#f0c060">'+mesLabel(bestM)+'</b> con '+formatCopCompact(Math.max.apply(null,allV)));
+  if(alerts.length){
+    html+='<div style="border-top:1px solid #1e3a4e;padding-top:8px;display:flex;flex-direction:column;gap:4px">';
+    alerts.forEach(function(a){html+='<div style="font-size:.68rem;color:#94a3b8">'+a+'</div>';});
+    html+='</div>';
+  }
+
+  html+='</div>';
+  el.innerHTML=html;
 }
 
 /* ---- INIT ---- */
@@ -992,6 +1974,7 @@ function buildPerdidas(){
   document.getElementById('diasLabel').textContent = '('+d2+' dias)';
 
   buildKPICards();
+  buildOpsTable();
   buildClientList();
   buildTable();
 })();
