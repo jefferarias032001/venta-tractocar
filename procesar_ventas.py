@@ -1012,6 +1012,13 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       </select>
     </div>
     <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Mes:</span>
+      <select id="flotaMesSel" onchange="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+        <option value="">Todos los meses</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
       <span style="color:#475569;font-size:.72rem">Estado:</span>
       <select id="flotaEstadoSel" onchange="buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
@@ -2542,6 +2549,25 @@ function dirRuta(ori,des){
 }
 
 function initFlota(){
+  // Poblar meses disponibles desde los datos de flota
+  var raw=window.FLOTA||{};
+  var mesesSet={};
+  Object.values(raw).forEach(function(trips){
+    trips.forEach(function(t){ if(t.f && t.f.length>=7) mesesSet[t.f.substring(0,7)]=1; });
+  });
+  var meses=Object.keys(mesesSet).sort();
+  var mSel=document.getElementById('flotaMesSel');
+  var curMes=mSel.value;
+  mSel.innerHTML='<option value="">Todos los meses</option>';
+  meses.forEach(function(m){
+    var opt=document.createElement('option');
+    opt.value=m; opt.textContent=m;
+    if(m===curMes) opt.selected=true;
+    mSel.appendChild(opt);
+  });
+  // Seleccionar el mes más reciente por defecto si no hay selección previa
+  if(!curMes && meses.length){ mSel.value=meses[meses.length-1]; }
+
   var sel=document.getElementById('flotaClienteSel');
   var clientes=window.FLOTA_CLIENTES||[];
   sel.innerHTML='<option value="">-- Todos los clientes --</option>';
@@ -2555,13 +2581,15 @@ function initFlota(){
 }
 
 /* Analiza una placa y devuelve su estado de vuelta desde Costa */
-function analizarPlaca(placa, refCod){
+function analizarPlaca(placa, refCod, mesFil){
   var raw=window.FLOTA||{};
   var trips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
 
-  // Filtrar por cliente si se eligió uno
+  // Filtrar por cliente y mes de la bajada
   var bajaTrips=trips.filter(function(t){
-    return dirRuta(t.ori,t.des)==='BAJA' && (!refCod || t.cod===refCod);
+    return dirRuta(t.ori,t.des)==='BAJA'
+      && (!refCod || t.cod===refCod)
+      && (!mesFil || (t.f && t.f.substring(0,7)===mesFil));
   });
   if(!bajaTrips.length) return null;
 
@@ -2603,9 +2631,10 @@ function buildFlota(){
   var raw=window.FLOTA||{};
   var refCod=document.getElementById('flotaClienteSel').value;
   var estadoFil=document.getElementById('flotaEstadoSel').value;
+  var mesFil=document.getElementById('flotaMesSel').value;
 
-  // Analizar todas las placas
-  var todas=Object.keys(raw).map(function(p){return analizarPlaca(p,refCod);}).filter(Boolean);
+  // Analizar todas las placas (filtrando bajadas por mes si aplica)
+  var todas=Object.keys(raw).map(function(p){return analizarPlaca(p,refCod,mesFil);}).filter(Boolean);
 
   // Resumen global (siempre visible)
   var nBaja=todas.length;
