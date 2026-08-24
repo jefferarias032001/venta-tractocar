@@ -1023,9 +1023,10 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       <select id="flotaEstadoSel" onchange="buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
         <option value="">Todos</option>
-        <option value="FUGA">Fugas</option>
-        <option value="OK">Fidelizadas</option>
-        <option value="PENDIENTE">Pendientes</option>
+        <option value="FUGA">Fuga confirmada</option>
+        <option value="PROBABLE_FUGA">Probable fuga (+5d)</option>
+        <option value="RETORNO">Retorno Tractocar</option>
+        <option value="PENDIENTE">En Costa (reciente)</option>
       </select>
     </div>
     <div id="flotaKpi" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
@@ -2602,10 +2603,18 @@ function analizarPlaca(placa, refCod, mesFil){
     if(trips[i].f>lastBaja.f){sigViaje=trips[i];break;}
   }
 
-  var estado,estadoLabel,estadoCol;
+  var estado,estadoLabel,estadoCol,diasEnCosta=0;
   if(!sigViaje){
-    // Sin datos posteriores → placa quedó en costa sin viaje de retorno registrado
-    estado='PENDIENTE'; estadoLabel='⏳ En Costa'; estadoCol='#f59e0b';
+    // Calcular días desde la bajada hasta hoy
+    var hoy=new Date(); hoy.setHours(0,0,0,0);
+    var fBaja=new Date(lastBaja.f+'T00:00:00');
+    diasEnCosta=Math.max(0,Math.floor((hoy-fBaja)/86400000));
+    if(diasEnCosta>5){
+      // Lleva más de 5 días sin aparecer en datos → muy probable que subió con competidor
+      estado='PROBABLE_FUGA'; estadoLabel='⚠️ Prob. Fuga ('+diasEnCosta+'d)'; estadoCol='#f97316';
+    } else {
+      estado='PENDIENTE'; estadoLabel='⏳ En Costa ('+diasEnCosta+'d)'; estadoCol='#f59e0b';
+    }
   } else if(esCosta(sigViaje.ori)){
     // Siguiente viaje registrado sale DESDE la costa → volvió al interior CON TRACTOCAR ✅
     estado='RETORNO'; estadoLabel='✓ Retorno Tractocar'; estadoCol='#4ade80';
@@ -2624,6 +2633,7 @@ function analizarPlaca(placa, refCod, mesFil){
     estadoCol:estadoCol,
     clienteBaja:lastBaja.cod,
     clienteSig:sigViaje?sigViaje.cod:null,
+    diasEnCosta:diasEnCosta,
   };
 }
 
@@ -2640,8 +2650,10 @@ function buildFlota(){
   var nBaja=todas.length;
   var nRetorno=todas.filter(function(f){return f.estado==='RETORNO';}).length;
   var nFuga=todas.filter(function(f){return f.estado==='FUGA';}).length;
+  var nProbFuga=todas.filter(function(f){return f.estado==='PROBABLE_FUGA';}).length;
   var nPend=todas.filter(function(f){return f.estado==='PENDIENTE';}).length;
-  var pctFuga=nBaja>0?Math.round(nFuga/nBaja*100):0;
+  var nFugaTotal=nFuga+nProbFuga;
+  var pctFuga=nBaja>0?Math.round(nFugaTotal/nBaja*100):0;
   var pctRet=nBaja>0?Math.round(nRetorno/nBaja*100):0;
 
   function kpiBox(lbl,val,sub,col){
@@ -2654,8 +2666,9 @@ function buildFlota(){
   document.getElementById('flotaKpi').innerHTML=
     kpiBox('PLACAS BAJARON A COSTA',nBaja,'viajes con Tractocar','#60a5fa')+
     kpiBox('RETORNARON CON TRACTOCAR',nRetorno,pctRet+'% de las bajadas','#4ade80')+
-    kpiBox('FUGA (subieron con otro)',nFuga,pctFuga+'% de las bajadas','#ef4444')+
-    kpiBox('AÚN EN COSTA',nPend,'sin retorno en datos','#f59e0b');
+    kpiBox('FUGA CONFIRMADA',nFuga,Math.round(nFuga/nBaja*100||0)+'% de las bajadas','#ef4444')+
+    kpiBox('PROBABLE FUGA (+5d)',nProbFuga,Math.round(nProbFuga/nBaja*100||0)+'% sin retorno','#f97316')+
+    kpiBox('AÚN EN COSTA (reciente)',nPend,'menos de 5 días','#f59e0b');
 
   // Resumen por cliente del viaje de BAJADA
   buildResumenClientes(todas);
@@ -2665,7 +2678,7 @@ function buildFlota(){
     return !estadoFil || f.estado===estadoFil;
   });
 
-  var ORD={FUGA:0,PENDIENTE:1,RETORNO:2};
+  var ORD={FUGA:0,PROBABLE_FUGA:1,PENDIENTE:2,RETORNO:3};
   filas.sort(function(a,b){
     return (ORD[a.estado]||0)-(ORD[b.estado]||0)||b.lastBaja.f.localeCompare(a.lastBaja.f);
   });
