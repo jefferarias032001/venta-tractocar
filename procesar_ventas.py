@@ -455,9 +455,25 @@ def main():
     if not ajov_raw.empty:
         ajov_raw["TipoOp"] = ajov_raw.apply(clasificar_ajov_row, axis=1)
         ajov_hist_dict = {}
-        ajov_raw2 = ajov_raw[ajov_raw["Mes"].notna() & ajov_raw["Dia"].notna()]
+        ajov_rutas_dict = {}
+        ajov_raw2 = ajov_raw[ajov_raw["Mes"].notna() & ajov_raw["Dia"].notna()].copy()
+        # Columna Ruta para el detalle por ruta
+        def _make_ruta(row):
+            ori = str(row.get("Origen","") or "").strip().upper()
+            des = str(row.get("Destino","") or "").strip().upper()
+            tip = _norm_tip(row.get("Tipologia",""))
+            return f"{ori}-{des}-{tip}"
+        ajov_raw2["Ruta"] = ajov_raw2.apply(_make_ruta, axis=1)
         for (tipo, mes, dia), grp in ajov_raw2.groupby(["TipoOp", "Mes", "Dia"]):
             ajov_hist_dict.setdefault(str(tipo), {}).setdefault(str(mes), {})[str(int(dia))] = [
+                round(float(grp["AFacturar"].sum()), 0),
+                round(float(grp["Utilidad"].sum()), 0),
+                int(grp["Manifiesto"].nunique()),
+            ]
+        for (ruta, tipo, mes, dia), grp in ajov_raw2.groupby(["Ruta", "TipoOp", "Mes", "Dia"]):
+            if str(ruta) not in ajov_rutas_dict:
+                ajov_rutas_dict[str(ruta)] = {"tipo": str(tipo), "data": {}}
+            ajov_rutas_dict[str(ruta)]["data"].setdefault(str(mes), {})[str(int(dia))] = [
                 round(float(grp["AFacturar"].sum()), 0),
                 round(float(grp["Utilidad"].sum()), 0),
                 int(grp["Manifiesto"].nunique()),
@@ -466,6 +482,7 @@ def main():
         print(f"  AJOVER: {len(ajov_raw):,} registros → {len(tipos_ajov)} tipos: {tipos_ajov}")
     else:
         ajov_hist_dict = {}
+        ajov_rutas_dict = {}
         print("  AJOVER: sin datos AJOV/NOCO")
 
     # ---- 6. PREPARAR PAYLOAD PARA JS ----
@@ -526,6 +543,7 @@ def main():
         f"window.HISTORICO={json.dumps(hist_dict, ensure_ascii=False)};"
         f"window.OPS_HISTORICO={json.dumps(ops_hist, ensure_ascii=False)};"
         f"window.AJOV_HIST={json.dumps(ajov_hist_dict, ensure_ascii=False)};"
+        f"window.AJOV_RUTAS={json.dumps(ajov_rutas_dict, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
         f"nombreMes:'{nombre_mes}',labelHoy:'{label_hoy}',labelAyer:'{label_ayer}',"
@@ -900,13 +918,28 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
 <div id="viewAjover" style="display:none;padding:14px 10px">
   <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
     <span style="color:#60a5fa;font-size:.85rem;font-weight:700;letter-spacing:.05em">AJOVER · Detalle por Tipo de Operación</span>
-    <span style="color:#334155;font-size:.72rem">(mismo rango días filtrado en la tabla principal)</span>
-    <div id="ajovKpi" style="display:flex;gap:20px;margin-left:auto;flex-wrap:wrap"></div>
+    <span style="color:#475569;font-size:.72rem">(mismo rango días filtrado en la tabla principal)</span>
+    <div id="ajovKpi" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+    <div style="display:flex;gap:0;margin-left:auto;border:1px solid #1e3a4e;border-radius:6px;overflow:hidden">
+      <button class="ajov-mode-btn" id="ajovBtnVenta"  onclick="setAjovMode('venta',this)"  style="background:#1a3a5c;border:none;color:#f97316;font-size:.73rem;font-weight:700;padding:5px 14px;cursor:pointer">$ Venta</button>
+      <button class="ajov-mode-btn" id="ajovBtnViajes" onclick="setAjovMode('viajes',this)" style="background:none;border:none;color:#64748b;font-size:.73rem;font-weight:600;padding:5px 14px;cursor:pointer">&#9201; Viajes</button>
+    </div>
   </div>
   <div style="overflow-x:auto">
     <table style="border-collapse:collapse;font-size:.76rem;min-width:700px;width:100%">
       <thead id="theadAjover"></thead>
       <tbody id="tbodyAjover"></tbody>
+    </table>
+  </div>
+  <!-- Tabla detalle por ruta -->
+  <div id="ajovRutasTitulo" style="margin-top:24px;padding:10px 4px 6px;border-top:1px solid #1e3a4e;display:none">
+    <span id="ajovRutasLabel" style="color:#60a5fa;font-size:.8rem;font-weight:700;letter-spacing:.05em">RUTAS · </span>
+    <span style="color:#475569;font-size:.7rem">Haz clic en un tipo de operación arriba para filtrar</span>
+  </div>
+  <div style="overflow-x:auto;margin-top:4px">
+    <table style="border-collapse:collapse;font-size:.75rem;min-width:600px;width:100%">
+      <thead id="theadAjovRutas"></thead>
+      <tbody id="tbodyAjovRutas"></tbody>
     </table>
   </div>
 </div>
@@ -2034,154 +2067,244 @@ function buildInsights(){
 /* ======================================================
    AJOVER — Detalle por Tipo de Operación
    ====================================================== */
+var ajovMode = 'venta';
+var selectedAjovTipo = null;
+
+function setAjovMode(mode, btn){
+  ajovMode = mode;
+  document.querySelectorAll('.ajov-mode-btn').forEach(function(b){
+    b.style.background='none'; b.style.color='#64748b';
+  });
+  btn.style.background='#1a3a5c'; btn.style.color='#f97316';
+  buildAjover();
+}
+
 function buildAjover(){
   var raw = window.AJOV_HIST || {};
-  var m   = window.META || {};
 
-  // Obtener todos los meses disponibles en los datos AJOV
+  // Todos los meses disponibles
   var mesesSet = {};
   Object.keys(raw).forEach(function(t){
-    Object.keys(raw[t]).forEach(function(mes){ mesesSet[mes] = 1; });
+    Object.keys(raw[t]).forEach(function(mes){ mesesSet[mes]=1; });
   });
   var allMeses = Object.keys(mesesSet).sort();
-  if(!allMeses.length){ document.getElementById('tbodyAjover').innerHTML='<tr><td colspan="20" style="text-align:center;padding:24px;color:#334155">Sin datos AJOV disponibles.</td></tr>'; return; }
-  // Limitar a los 8 meses más recientes
-  if(allMeses.length > 8) allMeses = allMeses.slice(allMeses.length - 8);
-
-  var mesActIdx = allMeses.length - 1;
-
-  // Suma de V, U, N para un tipo en un mes restringida a d1-d2
-  function getVUN(tipo, mes){
-    var mdata = (raw[tipo] || {})[mes] || {};
-    var V=0, U=0, N=0;
-    for(var day=d1; day<=d2; day++){
-      var e = mdata[String(day)];
-      if(e){ V+=e[0]; U+=e[1]; N+=e[2]; }
-    }
-    return {V:V, U:U, N:N};
+  if(!allMeses.length){
+    document.getElementById('tbodyAjover').innerHTML='<tr><td colspan="15" style="text-align:center;padding:24px;color:#64748b">Sin datos AJOV disponibles.</td></tr>';
+    return;
   }
+  if(allMeses.length > 8) allMeses = allMeses.slice(allMeses.length-8);
+  var mesActIdx = allMeses.length - 1;
+  var isVenta   = ajovMode === 'venta';
 
-  // Tipos de operación con algún dato
+  // Valor para un tipo/mes en rango d1-d2 según modo
+  function getVal(tipo, mes){
+    var mdata=(raw[tipo]||{})[mes]||{}, V=0, N=0;
+    for(var day=d1; day<=d2; day++){
+      var e=mdata[String(day)];
+      if(e){ V+=e[0]; N+=e[2]; }
+    }
+    return isVenta ? V : N;
+  }
+  function getVUN(tipo, mes){
+    var mdata=(raw[tipo]||{})[mes]||{}, V=0,U=0,N=0;
+    for(var day=d1;day<=d2;day++){var e=mdata[String(day)];if(e){V+=e[0];U+=e[1];N+=e[2];}}
+    return {V:V,U:U,N:N};
+  }
+  function fmtVal(v){ return isVenta ? formatCopCompact(v) : NUM.format(v); }
+
+  // Tipos activos
   var tipos = Object.keys(raw).filter(function(t){
     return allMeses.some(function(mes){ var r=getVUN(t,mes); return r.V>0||r.N>0; });
   });
-  // Orden fijo deseado; el resto al final
-  var ORDER = ['Transferencia CTG - MAD','Transferencia MAD - CTG','Graneles',
-               'Transferencia CTG - CALI','SENCILLOS MADRID','ZORROS CALI',
-               'TRANSFERENCIA ALAMO','FIJOS CALI','FIJOS MEDELLIN',
-               'ENTREGA A CLIENTES','TRANSFERENCIAS','OTROS NOCO'];
+  var ORDER=['Transferencia CTG - MAD','Transferencia MAD - CTG','Graneles',
+             'Transferencia CTG - CALI','SENCILLOS MADRID','ZORROS CALI',
+             'TRANSFERENCIA ALAMO','FIJOS CALI','FIJOS MEDELLIN',
+             'ENTREGA A CLIENTES','TRANSFERENCIAS','OTROS NOCO'];
   tipos.sort(function(a,b){
-    var ia=ORDER.indexOf(a), ib=ORDER.indexOf(b);
-    if(ia<0) ia=99; if(ib<0) ib=99;
-    if(ia!==ib) return ia-ib;
-    return a.localeCompare(b);
+    var ia=ORDER.indexOf(a)||99, ib=ORDER.indexOf(b)||99;
+    if(ia<0)ia=99; if(ib<0)ib=99;
+    return ia!==ib ? ia-ib : a.localeCompare(b);
   });
 
-  // KPI strip: mes actual totals
-  var kpiV=0, kpiU=0, kpiN=0, kpiVant=0;
+  // KPI bar (siempre en venta)
+  var kpiV=0,kpiU=0,kpiN=0,kpiVant=0;
   tipos.forEach(function(t){
     var cur=getVUN(t,allMeses[mesActIdx]);
     kpiV+=cur.V; kpiU+=cur.U; kpiN+=cur.N;
-    if(mesActIdx>0){ var ant=getVUN(t,allMeses[mesActIdx-1]); kpiVant+=ant.V; }
+    if(mesActIdx>0){var ant=getVUN(t,allMeses[mesActIdx-1]);kpiVant+=ant.V;}
   });
-  var kpiDif=kpiV-kpiVant, kpiPct=kpiVant>0?(kpiDif/kpiVant*100):0;
-  var kpiCol=kpiDif>=0?'#4ade80':'#ef4444';
+  var kpiDif=kpiV-kpiVant, kpiPct=kpiVant>0?(kpiDif/kpiVant*100):0, kpiCol=kpiDif>=0?'#4ade80':'#ef4444';
   var kpiEl=document.getElementById('ajovKpi');
-  if(kpiEl){
-    kpiEl.innerHTML=
-      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
-        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">VENTA '+mesLabel(allMeses[mesActIdx])+'</div>'+
-        '<div style="color:#f0c060;font-size:1rem;font-weight:800">'+formatCopCompact(kpiV)+'</div>'+
-      '</div>'+
-      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
-        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">vs MES ANT.</div>'+
-        '<div style="color:'+kpiCol+';font-size:1rem;font-weight:800">'+(kpiDif>=0?'+':'')+formatCopCompact(kpiDif)+'</div>'+
-        '<div style="color:'+kpiCol+';font-size:.65rem">'+(kpiPct>=0?'+':'')+kpiPct.toFixed(1)+'%</div>'+
-      '</div>'+
-      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
-        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">VIAJES</div>'+
-        '<div style="color:#e2e8f0;font-size:1rem;font-weight:800">'+kpiN+'</div>'+
-      '</div>'+
-      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
-        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">MARGEN</div>'+
-        '<div style="color:#4ade80;font-size:1rem;font-weight:800">'+(kpiV>0?(kpiU/kpiV*100).toFixed(1)+'%':'—')+'</div>'+
-      '</div>';
-  }
+  if(kpiEl) kpiEl.innerHTML=
+    '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+      '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">VENTA '+mesLabel(allMeses[mesActIdx])+'</div>'+
+      '<div style="color:#f0c060;font-size:1rem;font-weight:800">'+formatCopCompact(kpiV)+'</div>'+
+    '</div>'+
+    '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+      '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">vs MES ANT.</div>'+
+      '<div style="color:'+kpiCol+';font-size:1rem;font-weight:800">'+(kpiDif>=0?'+':'')+formatCopCompact(kpiDif)+'</div>'+
+      '<div style="color:'+kpiCol+';font-size:.65rem">'+(kpiPct>=0?'+':'')+kpiPct.toFixed(1)+'%</div>'+
+    '</div>'+
+    '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+      '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">VIAJES</div>'+
+      '<div style="color:#e2e8f0;font-size:1rem;font-weight:800">'+kpiN+'</div>'+
+    '</div>'+
+    '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+      '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">MARGEN</div>'+
+      '<div style="color:#4ade80;font-size:1rem;font-weight:800">'+(kpiV>0?(kpiU/kpiV*100).toFixed(1)+'%':'—')+'</div>'+
+    '</div>';
 
-  // ---- HEADER ----
-  var thBg  = 'background:#0a1520;color:#64748b;font-size:.7rem;font-weight:700;padding:7px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap;';
-  var thAct = 'background:#0d1e2e;color:#f0c060;font-size:.7rem;font-weight:700;padding:7px 10px;border-bottom:2px solid #f97316;white-space:nowrap;';
-  var th2   = 'background:#060f18;color:#334155;font-size:.65rem;padding:3px 8px;border-bottom:1px solid #0e1e2e;white-space:nowrap;';
-  var h1='<tr>', h2='<tr>';
-  h1 += '<th style="'+thBg+'text-align:left;min-width:190px">TIPO OPERACIÓN</th>';
-  h2 += '<th style="'+th2+'"></th>';
+  // ---- HEADER (una sola columna por mes) ----
+  var thBg  = 'background:#0a1520;color:#94a3b8;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #1e3a4e;white-space:nowrap;text-align:right;';
+  var thAct = 'background:#0d1e2e;color:#f0c060;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #f97316;white-space:nowrap;text-align:right;';
+  var hRow  = '<tr>';
+  hRow += '<th style="background:#0a1520;color:#94a3b8;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #1e3a4e;text-align:left;white-space:nowrap;min-width:200px">TIPO OPERACIÓN</th>';
   allMeses.forEach(function(mes, mi){
-    var isAct = (mi===mesActIdx);
-    var sty   = isAct ? thAct : thBg;
-    h1 += '<th colspan="2" style="'+sty+'text-align:center">'+mesLabel(mes)+'</th>';
-    h2 += '<th style="'+th2+'text-align:right">VENTA</th><th style="'+th2+'text-align:right">VJE</th>';
+    hRow += '<th style="'+(mi===mesActIdx?thAct:thBg)+'">'+mesLabel(mes)+'</th>';
   });
-  h1 += '<th style="'+thBg+'text-align:right;color:#f97316">vs Ant.</th>';
-  h1 += '<th style="'+thBg+'text-align:right;color:#f97316">%</th>';
-  h2 += '<th style="'+th2+'"></th><th style="'+th2+'"></th>';
-  h1 += '</tr>'; h2 += '</tr>';
-  document.getElementById('theadAjover').innerHTML = h1 + h2;
+  hRow += '<th style="'+thBg+'color:#f97316">vs Ant.</th>';
+  hRow += '<th style="'+thBg+'color:#f97316">%</th>';
+  hRow += '</tr>';
+  document.getElementById('theadAjover').innerHTML = hRow;
 
   // ---- ROWS ----
   var tbody = document.getElementById('tbodyAjover');
   tbody.innerHTML = '';
 
-  // Totals per month
   var totals = allMeses.map(function(mes){
-    var V=0,U=0,N=0;
-    tipos.forEach(function(t){ var r=getVUN(t,mes); V+=r.V; U+=r.U; N+=r.N; });
-    return {V:V,U:U,N:N};
+    return tipos.reduce(function(s,t){return s+getVal(t,mes);},0);
   });
 
   tipos.forEach(function(tipo, ri){
-    var tr = document.createElement('tr');
-    tr.style.cssText='border-bottom:1px solid #0e1e2e;'+(ri%2===0?'background:#060f18':'background:#040a12');
+    var tr  = document.createElement('tr');
+    var isSelected = (selectedAjovTipo === tipo);
+    var baseBg = ri%2===0?'#070e18':'#050b14';
+    tr.style.cssText = 'border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2540':baseBg)+';cursor:pointer;';
+    if(isSelected) tr.style.outline = '1px solid #2d6a9f';
 
-    var actR = getVUN(tipo, allMeses[mesActIdx]);
-    var antR = mesActIdx > 0 ? getVUN(tipo, allMeses[mesActIdx-1]) : {V:0,U:0,N:0};
-    var dif  = actR.V - antR.V;
-    var pct  = antR.V > 0 ? (dif/antR.V*100) : (actR.V>0?100:0);
-    var difCol = dif >= 0 ? '#4ade80' : '#ef4444';
+    tr.onclick = (function(t){ return function(){
+      selectedAjovTipo = (selectedAjovTipo===t) ? null : t;
+      buildAjover();
+    }; })(tipo);
 
-    var html = '<td style="text-align:left;padding:6px 10px;font-weight:600;color:#e2e8f0;white-space:nowrap">'+tipo+'</td>';
+    var vAct  = getVal(tipo, allMeses[mesActIdx]);
+    var vAnt  = mesActIdx>0 ? getVal(tipo, allMeses[mesActIdx-1]) : 0;
+    var dif   = vAct - vAnt;
+    var pct   = vAnt>0 ? (dif/vAnt*100) : (vAct>0?100:0);
+    var dCol  = dif>=0 ? '#4ade80' : '#ef4444';
+
+    var html = '<td style="padding:7px 12px;font-weight:700;color:'+(isSelected?'#60d0ff':'#ffffff')+';white-space:nowrap;text-align:left">'+(isSelected?'&#9655; ':'')+tipo+'</td>';
     allMeses.forEach(function(mes, mi){
-      var r = getVUN(tipo, mes);
-      var isAct = (mi === mesActIdx);
-      var vCol = isAct ? '#f0c060' : '#7a8fa8';
-      var nCol = '#334155';
-      html += '<td style="text-align:right;padding:5px 10px;color:'+vCol+';white-space:nowrap;font-weight:'+(isAct?'700':'400')+'">';
-      html += r.V > 0 ? formatCopCompact(r.V) : '<span style="color:#1a2a3a">—</span>';
-      html += '</td>';
-      html += '<td style="text-align:right;padding:5px 6px;color:'+nCol+';font-size:.7rem;white-space:nowrap">';
-      html += r.N > 0 ? r.N : '<span style="color:#1a2a3a">—</span>';
+      var v    = getVal(tipo, mes);
+      var isAct= (mi===mesActIdx);
+      var vCol = isAct ? '#ffffff' : '#cbd5e1';
+      var fw   = isAct ? '700' : '400';
+      html += '<td style="text-align:right;padding:7px 12px;color:'+vCol+';white-space:nowrap;font-weight:'+fw+'">';
+      html += v>0 ? fmtVal(v) : '<span style="color:#2a3a4a">—</span>';
       html += '</td>';
     });
-    html += '<td style="text-align:right;padding:6px 10px;color:'+difCol+';font-weight:700;white-space:nowrap">'+(dif>=0?'+':'')+formatCopCompact(dif)+'</td>';
-    html += '<td style="text-align:right;padding:6px 8px;color:'+difCol+';font-weight:700;white-space:nowrap">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</td>';
+    html += '<td style="text-align:right;padding:7px 12px;color:'+dCol+';font-weight:700;white-space:nowrap">'+(dif>=0?'+':'')+fmtVal(dif)+'</td>';
+    html += '<td style="text-align:right;padding:7px 10px;color:'+dCol+';font-weight:700;white-space:nowrap">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</td>';
     tr.innerHTML = html;
+    tr.onclick = (function(t){ return function(){
+      selectedAjovTipo = (selectedAjovTipo===t) ? null : t;
+      buildAjover();
+    }; })(tipo);
     tbody.appendChild(tr);
   });
 
   // Total row
-  var tf = document.createElement('tr');
-  tf.style.cssText = 'background:#1a2d40;border-top:2px solid #2d4a6a;font-weight:700';
-  var tAct = totals[mesActIdx], tAnt = mesActIdx>0?totals[mesActIdx-1]:{V:0,N:0};
-  var tDif = tAct.V-tAnt.V, tPct=tAnt.V>0?(tDif/tAnt.V*100):0, tCol=tDif>=0?'#4ade80':'#ef4444';
-  var tHtml = '<td style="text-align:left;padding:7px 10px;color:#f97316">TOTAL</td>';
-  totals.forEach(function(t, ti){
-    var isAct = (ti===mesActIdx);
-    tHtml += '<td style="text-align:right;padding:7px 10px;color:'+(isAct?'#f0c060':'#94a3b8')+';font-weight:700">'+formatCopCompact(t.V)+'</td>';
-    tHtml += '<td style="text-align:right;padding:7px 6px;color:#64748b;font-size:.7rem">'+t.N+'</td>';
+  var tf   = document.createElement('tr');
+  tf.style.cssText = 'background:#162030;border-top:2px solid #2d4a6a;font-weight:700';
+  var tAct = totals[mesActIdx], tAnt=mesActIdx>0?totals[mesActIdx-1]:0;
+  var tDif = tAct-tAnt, tPct=tAnt>0?(tDif/tAnt*100):0, tCol=tDif>=0?'#4ade80':'#ef4444';
+  var tHtml='<td style="padding:8px 12px;color:#f97316;font-size:.8rem">TOTAL</td>';
+  totals.forEach(function(v,ti){
+    var isAct=(ti===mesActIdx);
+    tHtml+='<td style="text-align:right;padding:8px 12px;color:'+(isAct?'#f0c060':'#e2e8f0')+';font-weight:700">'+fmtVal(v)+'</td>';
   });
-  tHtml += '<td style="text-align:right;padding:7px 10px;color:'+tCol+'">'+(tDif>=0?'+':'')+formatCopCompact(tDif)+'</td>';
-  tHtml += '<td style="text-align:right;padding:7px 8px;color:'+tCol+'">'+(tPct>=0?'+':'')+tPct.toFixed(1)+'%</td>';
-  tf.innerHTML = tHtml;
+  tHtml+='<td style="text-align:right;padding:8px 12px;color:'+tCol+'">'+(tDif>=0?'+':'')+fmtVal(tDif)+'</td>';
+  tHtml+='<td style="text-align:right;padding:8px 10px;color:'+tCol+'">'+(tPct>=0?'+':'')+tPct.toFixed(1)+'%</td>';
+  tf.innerHTML=tHtml;
   tbody.appendChild(tf);
+  buildAjovRutas(allMeses, mesActIdx);
+}
+
+function buildAjovRutas(allMeses, mesActIdx){
+  var raw  = window.AJOV_RUTAS || {};
+  var isVenta = ajovMode === 'venta';
+  var titulo  = document.getElementById('ajovRutasTitulo');
+  var label   = document.getElementById('ajovRutasLabel');
+  var thead   = document.getElementById('theadAjovRutas');
+  var tbody   = document.getElementById('tbodyAjovRutas');
+  if(!thead||!tbody) return;
+
+  // Filtrar rutas por tipo seleccionado
+  var rutas = Object.keys(raw).filter(function(r){
+    return !selectedAjovTipo || raw[r].tipo === selectedAjovTipo;
+  });
+
+  if(!rutas.length || !allMeses.length){
+    titulo.style.display='none';
+    thead.innerHTML=''; tbody.innerHTML=''; return;
+  }
+  titulo.style.display='block';
+  label.textContent = selectedAjovTipo ? ('RUTAS · '+selectedAjovTipo) : 'RUTAS · Todas las operaciones';
+
+  function getRutaVal(ruta, mes){
+    var mdata=(raw[ruta]||{}).data||{};
+    var mdat=mdata[mes]||{};
+    var V=0, N=0;
+    for(var day=d1; day<=d2; day++){
+      var e=mdat[String(day)];
+      if(e){ V+=e[0]; N+=e[2]; }
+    }
+    return isVenta ? V : N;
+  }
+  function fmtVal(v){ return isVenta ? formatCopCompact(v) : NUM.format(v); }
+
+  // Header
+  var thBg  = 'background:#08131c;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #1e3a4e;white-space:nowrap;text-align:right;';
+  var thAct = 'background:#081828;color:#f0c060;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #c07020;white-space:nowrap;text-align:right;';
+  var hRow  = '<tr>';
+  hRow += '<th style="background:#08131c;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #1e3a4e;text-align:left;min-width:220px">RUTA</th>';
+  allMeses.forEach(function(mes, mi){
+    hRow += '<th style="'+(mi===mesActIdx?thAct:thBg)+'">'+mesLabel(mes)+'</th>';
+  });
+  hRow += '<th style="'+thBg+'color:#f97316">vs Ant.</th>';
+  hRow += '<th style="'+thBg+'color:#f97316">%</th>';
+  hRow += '</tr>';
+  thead.innerHTML = hRow;
+
+  // Sort rutas by valor mes actual desc
+  rutas.sort(function(a,b){
+    return getRutaVal(b,allMeses[mesActIdx]) - getRutaVal(a,allMeses[mesActIdx]);
+  });
+
+  tbody.innerHTML = '';
+  rutas.forEach(function(ruta, ri){
+    var tr = document.createElement('tr');
+    tr.style.cssText = 'border-bottom:1px solid #0a1a26;'+(ri%2===0?'background:#050c14':'background:#040a11');
+
+    var vAct = getRutaVal(ruta, allMeses[mesActIdx]);
+    var vAnt = mesActIdx>0 ? getRutaVal(ruta, allMeses[mesActIdx-1]) : 0;
+    var dif  = vAct-vAnt, pct=vAnt>0?(dif/vAnt*100):(vAct>0?100:0);
+    var dCol = dif>=0?'#4ade80':'#ef4444';
+
+    var html = '<td style="padding:5px 10px;color:#e2e8f0;white-space:nowrap;font-size:.72rem">'+ruta+'</td>';
+    allMeses.forEach(function(mes, mi){
+      var v    = getRutaVal(ruta, mes);
+      var isAct= (mi===mesActIdx);
+      var vCol = isAct ? '#f0f4ff' : '#94a3b8';
+      html += '<td style="text-align:right;padding:5px 10px;color:'+vCol+';white-space:nowrap;font-size:.72rem;font-weight:'+(isAct?'700':'400')+'">';
+      html += v>0 ? fmtVal(v) : '<span style="color:#1e2e3e">—</span>';
+      html += '</td>';
+    });
+    html += '<td style="text-align:right;padding:5px 10px;color:'+dCol+';font-size:.72rem;font-weight:700;white-space:nowrap">'+(dif>=0?'+':'')+fmtVal(dif)+'</td>';
+    html += '<td style="text-align:right;padding:5px 8px;color:'+dCol+';font-size:.72rem;font-weight:700;white-space:nowrap">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</td>';
+    tr.innerHTML = html;
+    tbody.appendChild(tr);
+  });
 }
 
 /* ---- INIT ---- */
