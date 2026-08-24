@@ -1774,8 +1774,12 @@ function trendBadge(cur, prev){
 function buildHistCharts(){
   function lastTwo(vals){return vals.length>=2?[vals[vals.length-1],vals[vals.length-2]]:[vals[0]||0,0];}
 
-  /* NACIONAL */
-  var nacM=opsHistMeses(['NACIONAL']), nacV=nacM.map(function(m){return opsHistVal('NACIONAL',m);});
+  /* NACIONAL — suma solo clientes no excluidos (igual que la tabla) */
+  var nacM=opsHistMeses(['NACIONAL']);
+  var nacV=nacM.map(function(m){
+    var clts=(window.CLIENTES||[]).filter(function(c){return !excluidos.has(c);});
+    return clts.reduce(function(s,cod){return s+getClientMonthVal(cod,m);},0);
+  });
   var nlt=lastTwo(nacV);
   document.getElementById('hcNac').innerHTML=
     '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">'+
@@ -1850,7 +1854,12 @@ function buildInsights(){
     return {cod:cod,last:last,prev:prev,dif:dif,pct:pct};
   }).filter(function(c){return c.last>0||c.prev>0;});
 
-  var nacLast=opTotal(['NACIONAL'],lastM), nacPrev=opTotal(['NACIONAL'],prevM);
+  /* Totales NACIONAL filtrados por excluidos */
+  function nacFilteredTotal(mes){
+    var clts=(window.CLIENTES||[]).filter(function(c){return !excluidos.has(c);});
+    return clts.reduce(function(s,cod){return s+getClientMonthVal(cod,mes);},0);
+  }
+  var nacLast=nacFilteredTotal(lastM), nacPrev=nacFilteredTotal(prevM);
   var nacDif=nacLast-nacPrev, nacPct=nacPrev>0?(nacDif/nacPrev*100):0;
   var nacUp=nacDif>=0;
 
