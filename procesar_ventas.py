@@ -508,9 +508,9 @@ def main():
     u_flota = u_flota[
         u_flota["_placa"].str.len() >= 5
     ]
-    # Limitar a los últimos 4 meses para mantener el payload razonable
+    # Limitar a los últimos 8 meses para capturar patrones de ida y vuelta
     meses_flota = sorted(u_flota["Mes"].dropna().unique())
-    meses_flota = meses_flota[-4:] if len(meses_flota) > 4 else meses_flota
+    meses_flota = meses_flota[-8:] if len(meses_flota) > 8 else meses_flota
     u_flota = u_flota[u_flota["Mes"].isin(meses_flota)].copy()
 
     flota_dict: dict = {}
@@ -2523,23 +2523,21 @@ function flotaColor(cod){
   return _flotaColorMap[cod];
 }
 
-var COSTA_KEYS  = ['CARTAGENA','BARRANQUILLA','SANTA MARTA'];
-var INTERI_KEYS = ['MADRID','BOGOTA','CALI','YUMBO','PALMIRA','PEREIRA',
-                   'BUCARAMANGA','VILLAVICENCIO','LA ESTRELLA','MEDELLIN',
-                   'ITAGUI','BELLO','RIONEGRO','MANIZALES'];
+/* Ciudades costeras — todo lo demás se considera interior.
+   BAJA = destino es costa (sin importar el origen: puede ser Guacheta, Samaca, etc.)
+   SUBE = origen es costa (el retorno, que es lo que nos indica si volvio con Tractocar) */
+var COSTA_KEYS = ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA',
+                  'VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA'];
 
 function esCosta(ciudad){
   var c=(ciudad||'').toUpperCase();
   return COSTA_KEYS.some(function(k){return c.indexOf(k)>=0;});
 }
-function esInter(ciudad){
-  var c=(ciudad||'').toUpperCase();
-  return INTERI_KEYS.some(function(k){return c.indexOf(k)>=0;});
-}
 function dirRuta(ori,des){
-  if(esInter(ori) && esCosta(des)) return 'BAJA';
-  if(esCosta(ori) && esInter(des)) return 'SUBE';
-  if(esCosta(ori)) return 'SALE_COSTA';
+  var dC=esCosta(des), oC=esCosta(ori);
+  if(dC && !oC) return 'BAJA';      // cualquier origen → costa
+  if(oC && !dC) return 'SUBE';      // costa → cualquier interior
+  if(oC && dC)  return 'COSTA';     // costa → costa
   return 'OTRA';
 }
 
@@ -2578,17 +2576,15 @@ function analizarPlaca(placa, refCod){
 
   var estado,estadoLabel,estadoCol;
   if(!sigViaje){
-    // Sin datos posteriores → placa está en costa, esperando
+    // Sin datos posteriores → placa quedó en costa sin viaje de retorno registrado
     estado='PENDIENTE'; estadoLabel='⏳ En Costa'; estadoCol='#f59e0b';
+  } else if(esCosta(sigViaje.ori)){
+    // Siguiente viaje registrado sale DESDE la costa → volvió al interior CON TRACTOCAR ✅
+    estado='RETORNO'; estadoLabel='✓ Retorno Tractocar'; estadoCol='#4ade80';
   } else {
-    var origenSig=(sigViaje.ori||'').toUpperCase();
-    if(esCosta(origenSig)){
-      // Siguiente viaje sale desde costa → subió CON TRACTOCAR
-      estado='RETORNO'; estadoLabel='✓ Retorno Tractocar'; estadoCol='#4ade80';
-    } else {
-      // Siguiente viaje sale desde interior sin haber aparecido saliendo de costa → FUGA
-      estado='FUGA'; estadoLabel='✗ FUGA (subió con otro)'; estadoCol='#ef4444';
-    }
+    // Siguiente viaje sale DESDE interior sin haber aparecido saliendo de costa
+    // → el viaje de regreso fue con un COMPETIDOR (no está en los datos de Tractocar)
+    estado='FUGA'; estadoLabel='✗ Fuga (subió con otro)'; estadoCol='#ef4444';
   }
 
   return {
