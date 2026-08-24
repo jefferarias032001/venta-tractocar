@@ -416,6 +416,58 @@ def main():
     meses_ops = set(m for k in ops_hist for m in ops_hist[k])
     print(f"  OPS Histórico: {len(ops_hist)} ops, {len(meses_ops)} meses")
 
+    # ---- AJOVER: clasificacion por tipo de operacion (AJOV + NOCO) ----
+    def _norm_tip(tip):
+        t = str(tip or "").strip().upper()
+        if "PATINETA"   in t: return "PT"
+        if "TRACTOMULA" in t: return "TM"
+        if "SENCILLO"   in t: return "SC"
+        if "TURBO"      in t: return "TB"
+        return t
+
+    def clasificar_ajov_row(row):
+        cod = str(row.get("Cod", "") or "").strip().upper()
+        ori = str(row.get("Origen", "") or "").strip().upper()
+        des = str(row.get("Destino", "") or "").strip().upper()
+        tip = _norm_tip(row.get("Tipologia", ""))
+        age = str(row.get("Ciudad", "") or "").strip().upper()
+        ruta = f"{ori}-{des}-{tip}"
+
+        if cod == "NOCO":
+            return "TRANSFERENCIAS" if ruta in ("CARTAGENA-MADRID-PT", "MADRID-CARTAGENA-PT") else "OTROS NOCO"
+
+        # AJOV
+        if ruta == "CARTAGENA-MADRID-PT":           return "Transferencia CTG - MAD"
+        if ruta == "MADRID-CARTAGENA-PT":           return "Transferencia MAD - CTG"
+        if ruta == "CARTAGENA-MADRID-TM":           return "Graneles"
+        if ruta == "CARTAGENA-MADRID-SC":           return "Transferencia CTG - MAD"
+        if ruta in ("CARTAGENA-YUMBO-PT",
+                    "CARTAGENA-YUMBO-SC"):          return "Transferencia CTG - CALI"
+        if ruta == "MADRID-CARTAGENA-SC":           return "SENCILLOS MADRID"
+        if ruta == "MADRID-SANTIAGO DE CALI-PT":    return "ZORROS CALI"
+        if ruta == "MADRID-BOGOTA-PT":              return "TRANSFERENCIA ALAMO"
+        if ruta == "MADRID-BOGOTA-TB":              return "ENTREGA A CLIENTES"
+        if "CALI" in age or age in ("CLO", "CAL"):  return "FIJOS CALI"
+        if ori == "LA ESTRELLA":                    return "FIJOS MEDELLIN"
+        return "ENTREGA A CLIENTES"
+
+    ajov_raw = u_nac[u_nac["Cod"].isin(["AJOV", "NOCO"])].copy()
+    if not ajov_raw.empty:
+        ajov_raw["TipoOp"] = ajov_raw.apply(clasificar_ajov_row, axis=1)
+        ajov_hist_dict = {}
+        ajov_raw2 = ajov_raw[ajov_raw["Mes"].notna() & ajov_raw["Dia"].notna()]
+        for (tipo, mes, dia), grp in ajov_raw2.groupby(["TipoOp", "Mes", "Dia"]):
+            ajov_hist_dict.setdefault(str(tipo), {}).setdefault(str(mes), {})[str(int(dia))] = [
+                round(float(grp["AFacturar"].sum()), 0),
+                round(float(grp["Utilidad"].sum()), 0),
+                int(grp["Manifiesto"].nunique()),
+            ]
+        tipos_ajov = sorted(ajov_hist_dict.keys())
+        print(f"  AJOVER: {len(ajov_raw):,} registros → {len(tipos_ajov)} tipos: {tipos_ajov}")
+    else:
+        ajov_hist_dict = {}
+        print("  AJOVER: sin datos AJOV/NOCO")
+
     # ---- 6. PREPARAR PAYLOAD PARA JS ----
     # Budget dict por Cod
     ppto_js = {}
@@ -473,6 +525,7 @@ def main():
         f"window.PERDIDAS={json.dumps(perdidas_js, ensure_ascii=False)};"
         f"window.HISTORICO={json.dumps(hist_dict, ensure_ascii=False)};"
         f"window.OPS_HISTORICO={json.dumps(ops_hist, ensure_ascii=False)};"
+        f"window.AJOV_HIST={json.dumps(ajov_hist_dict, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
         f"nombreMes:'{nombre_mes}',labelHoy:'{label_hoy}',labelAyer:'{label_ayer}',"
@@ -747,6 +800,7 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
   <button class="view-tab active" onclick="setView('tabla',this)">&#9776; Tabla Nacional</button>
   <button class="view-tab" onclick="setView('perdidas',this)">&#9888; Manifiestos a Pérdida</button>
   <button class="view-tab" onclick="setView('historico',this)">&#9196; Histórico</button>
+  <button class="view-tab" onclick="setView('ajover',this)">&#9672; AJOVER</button>
 </div>
 
 <div id="viewTabla">
@@ -838,6 +892,21 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
     <table id="tblHistorico" style="border-collapse:collapse;font-size:.76rem;min-width:600px;width:100%">
       <thead id="theadHistorico"></thead>
       <tbody id="tbodyHistorico"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ===== AJOVER ===== -->
+<div id="viewAjover" style="display:none;padding:14px 10px">
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+    <span style="color:#60a5fa;font-size:.85rem;font-weight:700;letter-spacing:.05em">AJOVER · Detalle por Tipo de Operación</span>
+    <span style="color:#334155;font-size:.72rem">(mismo rango días filtrado en la tabla principal)</span>
+    <div id="ajovKpi" style="display:flex;gap:20px;margin-left:auto;flex-wrap:wrap"></div>
+  </div>
+  <div style="overflow-x:auto">
+    <table style="border-collapse:collapse;font-size:.76rem;min-width:700px;width:100%">
+      <thead id="theadAjover"></thead>
+      <tbody id="tbodyAjover"></tbody>
     </table>
   </div>
 </div>
@@ -1054,12 +1123,16 @@ var OP_SEG_MAP = {
 };
 var curOp='TODOS', curSubOp='ALL';
 
+function isAjoverActive(){
+  return document.getElementById('viewAjover').style.display !== 'none';
+}
 function rebuildAll(){
   buildKPICards();
   buildOpsTable();
   buildTable();
   if(isPerdidasActive()) buildPerdidas();
   if(isHistoricoActive()) buildHistorico();
+  if(isAjoverActive()) buildAjover();
 }
 
 function setOp(btn){
@@ -1357,12 +1430,14 @@ function setView(v, btn){
   document.getElementById('viewTabla').style.display     = v==='tabla'     ? '' : 'none';
   document.getElementById('viewPerdidas').style.display  = v==='perdidas'  ? '' : 'none';
   document.getElementById('viewHistorico').style.display = v==='historico' ? '' : 'none';
+  document.getElementById('viewAjover').style.display    = v==='ajover'    ? '' : 'none';
   if(v==='perdidas'){
     var inp=document.getElementById('inputUserName');
     if(inp) inp.value=localStorage.getItem('tc_userName')||'';
     buildPerdidas();
   }
   if(v==='historico') buildHistorico();
+  if(v==='ajover') buildAjover();
 }
 
 /* ---- Toggle OTROS detalle ---- */
@@ -1954,6 +2029,159 @@ function buildInsights(){
 
   html+='</div>';
   el.innerHTML=html;
+}
+
+/* ======================================================
+   AJOVER — Detalle por Tipo de Operación
+   ====================================================== */
+function buildAjover(){
+  var raw = window.AJOV_HIST || {};
+  var m   = window.META || {};
+
+  // Obtener todos los meses disponibles en los datos AJOV
+  var mesesSet = {};
+  Object.keys(raw).forEach(function(t){
+    Object.keys(raw[t]).forEach(function(mes){ mesesSet[mes] = 1; });
+  });
+  var allMeses = Object.keys(mesesSet).sort();
+  if(!allMeses.length){ document.getElementById('tbodyAjover').innerHTML='<tr><td colspan="20" style="text-align:center;padding:24px;color:#334155">Sin datos AJOV disponibles.</td></tr>'; return; }
+  // Limitar a los 8 meses más recientes
+  if(allMeses.length > 8) allMeses = allMeses.slice(allMeses.length - 8);
+
+  var mesActIdx = allMeses.length - 1;
+
+  // Suma de V, U, N para un tipo en un mes restringida a d1-d2
+  function getVUN(tipo, mes){
+    var mdata = (raw[tipo] || {})[mes] || {};
+    var V=0, U=0, N=0;
+    for(var day=d1; day<=d2; day++){
+      var e = mdata[String(day)];
+      if(e){ V+=e[0]; U+=e[1]; N+=e[2]; }
+    }
+    return {V:V, U:U, N:N};
+  }
+
+  // Tipos de operación con algún dato
+  var tipos = Object.keys(raw).filter(function(t){
+    return allMeses.some(function(mes){ var r=getVUN(t,mes); return r.V>0||r.N>0; });
+  });
+  // Orden fijo deseado; el resto al final
+  var ORDER = ['Transferencia CTG - MAD','Transferencia MAD - CTG','Graneles',
+               'Transferencia CTG - CALI','SENCILLOS MADRID','ZORROS CALI',
+               'TRANSFERENCIA ALAMO','FIJOS CALI','FIJOS MEDELLIN',
+               'ENTREGA A CLIENTES','TRANSFERENCIAS','OTROS NOCO'];
+  tipos.sort(function(a,b){
+    var ia=ORDER.indexOf(a), ib=ORDER.indexOf(b);
+    if(ia<0) ia=99; if(ib<0) ib=99;
+    if(ia!==ib) return ia-ib;
+    return a.localeCompare(b);
+  });
+
+  // KPI strip: mes actual totals
+  var kpiV=0, kpiU=0, kpiN=0, kpiVant=0;
+  tipos.forEach(function(t){
+    var cur=getVUN(t,allMeses[mesActIdx]);
+    kpiV+=cur.V; kpiU+=cur.U; kpiN+=cur.N;
+    if(mesActIdx>0){ var ant=getVUN(t,allMeses[mesActIdx-1]); kpiVant+=ant.V; }
+  });
+  var kpiDif=kpiV-kpiVant, kpiPct=kpiVant>0?(kpiDif/kpiVant*100):0;
+  var kpiCol=kpiDif>=0?'#4ade80':'#ef4444';
+  var kpiEl=document.getElementById('ajovKpi');
+  if(kpiEl){
+    kpiEl.innerHTML=
+      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">VENTA '+mesLabel(allMeses[mesActIdx])+'</div>'+
+        '<div style="color:#f0c060;font-size:1rem;font-weight:800">'+formatCopCompact(kpiV)+'</div>'+
+      '</div>'+
+      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">vs MES ANT.</div>'+
+        '<div style="color:'+kpiCol+';font-size:1rem;font-weight:800">'+(kpiDif>=0?'+':'')+formatCopCompact(kpiDif)+'</div>'+
+        '<div style="color:'+kpiCol+';font-size:.65rem">'+(kpiPct>=0?'+':'')+kpiPct.toFixed(1)+'%</div>'+
+      '</div>'+
+      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">VIAJES</div>'+
+        '<div style="color:#e2e8f0;font-size:1rem;font-weight:800">'+kpiN+'</div>'+
+      '</div>'+
+      '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:8px 14px">'+
+        '<div style="color:#60a5fa;font-size:.62rem;font-weight:700;letter-spacing:.08em">MARGEN</div>'+
+        '<div style="color:#4ade80;font-size:1rem;font-weight:800">'+(kpiV>0?(kpiU/kpiV*100).toFixed(1)+'%':'—')+'</div>'+
+      '</div>';
+  }
+
+  // ---- HEADER ----
+  var thBg  = 'background:#0a1520;color:#64748b;font-size:.7rem;font-weight:700;padding:7px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap;';
+  var thAct = 'background:#0d1e2e;color:#f0c060;font-size:.7rem;font-weight:700;padding:7px 10px;border-bottom:2px solid #f97316;white-space:nowrap;';
+  var th2   = 'background:#060f18;color:#334155;font-size:.65rem;padding:3px 8px;border-bottom:1px solid #0e1e2e;white-space:nowrap;';
+  var h1='<tr>', h2='<tr>';
+  h1 += '<th style="'+thBg+'text-align:left;min-width:190px">TIPO OPERACIÓN</th>';
+  h2 += '<th style="'+th2+'"></th>';
+  allMeses.forEach(function(mes, mi){
+    var isAct = (mi===mesActIdx);
+    var sty   = isAct ? thAct : thBg;
+    h1 += '<th colspan="2" style="'+sty+'text-align:center">'+mesLabel(mes)+'</th>';
+    h2 += '<th style="'+th2+'text-align:right">VENTA</th><th style="'+th2+'text-align:right">VJE</th>';
+  });
+  h1 += '<th style="'+thBg+'text-align:right;color:#f97316">vs Ant.</th>';
+  h1 += '<th style="'+thBg+'text-align:right;color:#f97316">%</th>';
+  h2 += '<th style="'+th2+'"></th><th style="'+th2+'"></th>';
+  h1 += '</tr>'; h2 += '</tr>';
+  document.getElementById('theadAjover').innerHTML = h1 + h2;
+
+  // ---- ROWS ----
+  var tbody = document.getElementById('tbodyAjover');
+  tbody.innerHTML = '';
+
+  // Totals per month
+  var totals = allMeses.map(function(mes){
+    var V=0,U=0,N=0;
+    tipos.forEach(function(t){ var r=getVUN(t,mes); V+=r.V; U+=r.U; N+=r.N; });
+    return {V:V,U:U,N:N};
+  });
+
+  tipos.forEach(function(tipo, ri){
+    var tr = document.createElement('tr');
+    tr.style.cssText='border-bottom:1px solid #0e1e2e;'+(ri%2===0?'background:#060f18':'background:#040a12');
+
+    var actR = getVUN(tipo, allMeses[mesActIdx]);
+    var antR = mesActIdx > 0 ? getVUN(tipo, allMeses[mesActIdx-1]) : {V:0,U:0,N:0};
+    var dif  = actR.V - antR.V;
+    var pct  = antR.V > 0 ? (dif/antR.V*100) : (actR.V>0?100:0);
+    var difCol = dif >= 0 ? '#4ade80' : '#ef4444';
+
+    var html = '<td style="text-align:left;padding:6px 10px;font-weight:600;color:#e2e8f0;white-space:nowrap">'+tipo+'</td>';
+    allMeses.forEach(function(mes, mi){
+      var r = getVUN(tipo, mes);
+      var isAct = (mi === mesActIdx);
+      var vCol = isAct ? '#f0c060' : '#7a8fa8';
+      var nCol = '#334155';
+      html += '<td style="text-align:right;padding:5px 10px;color:'+vCol+';white-space:nowrap;font-weight:'+(isAct?'700':'400')+'">';
+      html += r.V > 0 ? formatCopCompact(r.V) : '<span style="color:#1a2a3a">—</span>';
+      html += '</td>';
+      html += '<td style="text-align:right;padding:5px 6px;color:'+nCol+';font-size:.7rem;white-space:nowrap">';
+      html += r.N > 0 ? r.N : '<span style="color:#1a2a3a">—</span>';
+      html += '</td>';
+    });
+    html += '<td style="text-align:right;padding:6px 10px;color:'+difCol+';font-weight:700;white-space:nowrap">'+(dif>=0?'+':'')+formatCopCompact(dif)+'</td>';
+    html += '<td style="text-align:right;padding:6px 8px;color:'+difCol+';font-weight:700;white-space:nowrap">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</td>';
+    tr.innerHTML = html;
+    tbody.appendChild(tr);
+  });
+
+  // Total row
+  var tf = document.createElement('tr');
+  tf.style.cssText = 'background:#1a2d40;border-top:2px solid #2d4a6a;font-weight:700';
+  var tAct = totals[mesActIdx], tAnt = mesActIdx>0?totals[mesActIdx-1]:{V:0,N:0};
+  var tDif = tAct.V-tAnt.V, tPct=tAnt.V>0?(tDif/tAnt.V*100):0, tCol=tDif>=0?'#4ade80':'#ef4444';
+  var tHtml = '<td style="text-align:left;padding:7px 10px;color:#f97316">TOTAL</td>';
+  totals.forEach(function(t, ti){
+    var isAct = (ti===mesActIdx);
+    tHtml += '<td style="text-align:right;padding:7px 10px;color:'+(isAct?'#f0c060':'#94a3b8')+';font-weight:700">'+formatCopCompact(t.V)+'</td>';
+    tHtml += '<td style="text-align:right;padding:7px 6px;color:#64748b;font-size:.7rem">'+t.N+'</td>';
+  });
+  tHtml += '<td style="text-align:right;padding:7px 10px;color:'+tCol+'">'+(tDif>=0?'+':'')+formatCopCompact(tDif)+'</td>';
+  tHtml += '<td style="text-align:right;padding:7px 8px;color:'+tCol+'">'+(tPct>=0?'+':'')+tPct.toFixed(1)+'%</td>';
+  tf.innerHTML = tHtml;
+  tbody.appendChild(tf);
 }
 
 /* ---- INIT ---- */
