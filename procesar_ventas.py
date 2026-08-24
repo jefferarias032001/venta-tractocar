@@ -530,6 +530,25 @@ def main():
     for p in flota_dict:
         flota_dict[p].sort(key=lambda x: x["f"])
 
+    # Estadísticas históricas por placa (para análisis inteligente)
+    _CK = ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA']
+    def _es_costa(c): return any(k in str(c or '').upper() for k in _CK)
+
+    flota_stats: dict = {}
+    for placa, trips in flota_dict.items():
+        ts = sorted(trips, key=lambda x: x["f"])
+        nb = nr = 0
+        vt = sum(t["v"] for t in ts)
+        for i, t in enumerate(ts):
+            if _es_costa(t["des"]) and not _es_costa(t["ori"]):
+                nb += 1
+                for j in range(i + 1, len(ts)):
+                    if ts[j]["f"] > t["f"]:
+                        if _es_costa(ts[j]["ori"]):
+                            nr += 1
+                        break
+        flota_stats[placa] = {"nb": nb, "nr": nr, "vt": round(vt, 0), "nt": len(ts)}
+
     # Clientes únicos con placas
     flota_clientes = sorted({
         trip["cod"] for trips in flota_dict.values() for trip in trips
@@ -597,6 +616,7 @@ def main():
         f"window.AJOV_HIST={json.dumps(ajov_hist_dict, ensure_ascii=False)};"
         f"window.AJOV_RUTAS={json.dumps(ajov_rutas_dict, ensure_ascii=False)};"
         f"window.FLOTA={json.dumps(flota_dict, ensure_ascii=False)};"
+        f"window.FLOTA_STATS={json.dumps(flota_stats, ensure_ascii=False)};"
         f"window.FLOTA_CLIENTES={json.dumps(flota_clientes, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
@@ -1030,6 +1050,15 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       </select>
     </div>
     <div id="flotaKpi" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
+  </div>
+
+  <!-- Panel análisis inteligente (colapsable) -->
+  <div id="flotaAnalisisWrap" style="margin-bottom:14px">
+    <button onclick="toggleFlotaAnalisis()"
+      style="background:#0d1a26;border:1px solid #1e3a4e;color:#60a5fa;font-size:.73rem;font-weight:700;padding:6px 14px;border-radius:6px;cursor:pointer;letter-spacing:.04em">
+      🧠 Análisis Inteligente
+    </button>
+    <div id="flotaAnalisis" style="display:none;margin-top:10px"></div>
   </div>
 
   <!-- Resumen por cliente -->
@@ -2683,8 +2712,28 @@ function buildFlota(){
     return (ORD[a.estado]||0)-(ORD[b.estado]||0)||b.lastBaja.f.localeCompare(a.lastBaja.f);
   });
 
+  // Calcular scores y enriquecer filas
+  var stats=window.FLOTA_STATS||{};
+  var vtAll=filas.map(function(f){return (stats[f.placa]||{}).vt||0;});
+  var vtMedian=vtAll.slice().sort(function(a,b){return a-b;})[Math.floor(vtAll.length/2)]||0;
+  filas.forEach(function(f){
+    var s=stats[f.placa]||{};
+    var sc=0;
+    if(f.estado==='FUGA') sc+=40;
+    else if(f.estado==='PROBABLE_FUGA') sc+=25+Math.min(f.diasEnCosta,20);
+    else if(f.estado==='PENDIENTE') sc+=5;
+    var nb=s.nb||0, nr=s.nr||0;
+    if(nb>0){ var pr=nr/nb; if(pr<0.3) sc+=20; else if(pr<0.6) sc+=10; }
+    if((s.vt||0)>vtMedian) sc+=15;
+    f._score=sc; f._stats=s;
+  });
+
+  // Actualizar panel análisis inteligente (si está abierto)
+  buildFlotaInteligente(filas);
+
   var thS='background:#0a1520;color:#94a3b8;font-size:.7rem;font-weight:700;padding:8px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap';
   document.getElementById('theadFlota').innerHTML='<tr>'+
+    '<th style="'+thS+';text-align:center">PRIO.</th>'+
     '<th style="'+thS+';text-align:left">PLACA</th>'+
     '<th style="'+thS+';text-align:left">ÚLTIMO VIAJE BAJADA</th>'+
     '<th style="'+thS+';text-align:center">CLIENTE BAJADA</th>'+
@@ -2698,7 +2747,7 @@ function buildFlota(){
   var tbody=document.getElementById('tbodyFlota');
   tbody.innerHTML='';
   if(!filas.length){
-    tbody.innerHTML='<tr><td colspan="8" style="padding:24px;text-align:center;color:#475569">Sin resultados con los filtros seleccionados.</td></tr>';
+    tbody.innerHTML='<tr><td colspan="9" style="padding:24px;text-align:center;color:#475569">Sin resultados con los filtros seleccionados.</td></tr>';
     return;
   }
 
@@ -2708,7 +2757,9 @@ function buildFlota(){
     tr.style.cssText='border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2040':(ri%2===0?'#070e18':'#050b14'))+';cursor:pointer';
     var cBColor=flotaColor(f.clienteBaja);
     var cSColor=f.clienteSig?flotaColor(f.clienteSig):'#475569';
+    var prioHtml=prioTag(f._score);
     tr.innerHTML=
+      '<td style="padding:7px 10px;text-align:center">'+prioHtml+'</td>'+
       '<td style="padding:7px 10px;font-weight:700;color:#ffffff">'+f.placa+'</td>'+
       '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.lastBaja.ori+' → '+f.lastBaja.des+'</td>'+
       '<td style="padding:7px 10px;text-align:center"><span style="background:'+cBColor+'22;color:'+cBColor+';font-weight:700;font-size:.7rem;border-radius:4px;padding:2px 8px">'+clientLabel(f.clienteBaja)+'</span></td>'+
@@ -2732,6 +2783,89 @@ function buildFlota(){
     tbody.appendChild(tr);
   });
   if(flotaSelectedPlaca && raw[flotaSelectedPlaca]) buildFlotaDetalle(flotaSelectedPlaca);
+}
+
+/* Devuelve badge de prioridad según score */
+function prioTag(sc){
+  if(sc>=50) return '<span style="background:#ef444422;color:#ef4444;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🔴 CRÍTICA</span>';
+  if(sc>=30) return '<span style="background:#f9731622;color:#f97316;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟠 ATENCIÓN</span>';
+  if(sc>=15) return '<span style="background:#f59e0b22;color:#f59e0b;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟡 MONITOREAR</span>';
+  return '<span style="background:#4ade8022;color:#4ade80;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟢 OK</span>';
+}
+
+/* Toggle panel análisis inteligente */
+function toggleFlotaAnalisis(){
+  var d=document.getElementById('flotaAnalisis');
+  d.style.display=d.style.display==='none'?'':'none';
+}
+
+/* Construye el panel de análisis inteligente */
+function buildFlotaInteligente(filas){
+  var panel=document.getElementById('flotaAnalisis');
+  if(!panel||panel.style.display==='none') return;
+
+  var criticas=filas.filter(function(f){return f._score>=50;}).sort(function(a,b){return b._score-a._score;}).slice(0,8);
+  var atencion=filas.filter(function(f){return f._score>=30&&f._score<50;}).sort(function(a,b){return b._score-a._score;}).slice(0,6);
+  var confiables=filas.filter(function(f){return f.estado==='RETORNO'&&(f._stats.nb||0)>=3;})
+    .sort(function(a,b){return (b._stats.nr||0)-(a._stats.nr||0)||(b._stats.vt||0)-(a._stats.vt||0);}).slice(0,5);
+
+  function fmtM(v){ return v>=1000000?(v/1000000).toFixed(1)+'M':v>=1000?(v/1000).toFixed(0)+'k':String(v); }
+
+  function tarjetasHtml(lista, color, emojiBadge){
+    if(!lista.length) return '<span style="color:#475569;font-size:.72rem">Ninguna en los filtros actuales.</span>';
+    return lista.map(function(f){
+      var s=f._stats||{};
+      var nb=s.nb||0, nr=s.nr||0;
+      var pctRet=nb>0?Math.round(nr/nb*100):0;
+      var dias=f.diasEnCosta>0?' · '+f.diasEnCosta+'d en costa':'';
+      var razon='';
+      if(f.estado==='FUGA') razon='Fuga confirmada';
+      else if(f.estado==='PROBABLE_FUGA') razon='Sin retorno +'+f.diasEnCosta+'d';
+      else if(f.estado==='RETORNO'&&pctRet<40) razon='Bajo retorno hist.';
+      else if(f.estado==='RETORNO') razon='Retorna con Tractocar';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:7px 12px;background:#060e16;border-left:3px solid '+color+';border-radius:4px;margin-bottom:5px">'+
+        '<span style="color:#fff;font-weight:800;font-size:.78rem;min-width:90px">'+f.placa+'</span>'+
+        '<span style="color:'+color+';font-size:.7rem;min-width:130px">'+razon+'</span>'+
+        '<span style="color:#64748b;font-size:.68rem">'+nb+' bajadas · '+pctRet+'% retorno · $'+fmtM(s.vt||0)+'</span>'+
+        (f.clienteSig?'<span style="color:#475569;font-size:.67rem;margin-left:6px">→ fue con '+clientLabel(f.clienteSig)+'</span>':'')+
+        '</div>';
+    }).join('');
+  }
+
+  var totalCriticas=filas.filter(function(f){return f._score>=50;}).length;
+  var totalAtencion=filas.filter(function(f){return f._score>=30&&f._score<50;}).length;
+  var totalOk=filas.filter(function(f){return f._score<15;}).length;
+
+  panel.innerHTML=
+    '<div style="background:#070f1a;border:1px solid #1e3a4e;border-radius:10px;padding:14px 18px">'+
+    // Resumen ejecutivo
+    '<div style="display:flex;gap:20px;margin-bottom:14px;flex-wrap:wrap">'+
+      '<div><span style="color:#ef4444;font-size:1.3rem;font-weight:800">'+totalCriticas+'</span><br><span style="color:#64748b;font-size:.65rem">CRÍTICAS</span></div>'+
+      '<div><span style="color:#f97316;font-size:1.3rem;font-weight:800">'+totalAtencion+'</span><br><span style="color:#64748b;font-size:.65rem">ATENCIÓN</span></div>'+
+      '<div><span style="color:#4ade80;font-size:1.3rem;font-weight:800">'+totalOk+'</span><br><span style="color:#64748b;font-size:.65rem">OK / CONFIABLES</span></div>'+
+      '<div style="margin-left:auto;color:#475569;font-size:.65rem;line-height:1.6;max-width:340px">'+
+        'Score = estado actual + historial de retorno + valor transportado.<br>'+
+        '<b style="color:#ef4444">Crítica ≥50</b> · <b style="color:#f97316">Atención ≥30</b> · <b style="color:#f59e0b">Monitorear ≥15</b> · <b style="color:#4ade80">OK &lt;15</b>'+
+      '</div>'+
+    '</div>'+
+    // Críticas
+    '<div style="margin-bottom:12px">'+
+      '<div style="color:#ef4444;font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:6px">🔴 CRÍTICAS · REQUIEREN ATENCIÓN INMEDIATA</div>'+
+      tarjetasHtml(criticas,'#ef4444','')+
+    '</div>'+
+    // Atención
+    '<div style="margin-bottom:12px">'+
+      '<div style="color:#f97316;font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:6px">🟠 ATENCIÓN · MONITOREAR DE CERCA</div>'+
+      tarjetasHtml(atencion,'#f97316','')+
+    '</div>'+
+    // Confiables
+    (confiables.length?
+      '<div>'+
+        '<div style="color:#4ade80;font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:6px">🟢 MÁS CONFIABLES · BUEN HISTORIAL DE RETORNO</div>'+
+        tarjetasHtml(confiables,'#4ade80','')+
+      '</div>'
+    :'')+
+    '</div>';
 }
 
 function buildResumenClientes(todas){
