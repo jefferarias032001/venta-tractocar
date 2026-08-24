@@ -1012,13 +1012,6 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       </select>
     </div>
     <div style="display:flex;align-items:center;gap:6px">
-      <span style="color:#475569;font-size:.72rem">Ruta:</span>
-      <select id="flotaRutaSel" onchange="buildFlota()"
-        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
-        <option value="">Todas las rutas</option>
-      </select>
-    </div>
-    <div style="display:flex;align-items:center;gap:6px">
       <span style="color:#475569;font-size:.72rem">Estado:</span>
       <select id="flotaEstadoSel" onchange="buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
@@ -1030,6 +1023,9 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
     </div>
     <div id="flotaKpi" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
   </div>
+
+  <!-- Resumen por cliente -->
+  <div id="flotaResumenClientes"></div>
 
   <!-- Tabla principal de placas -->
   <div style="overflow-x:auto">
@@ -2506,10 +2502,16 @@ function buildAjovRutas(allMeses, mesActIdx){
 
 /* ======================================================
    CONTROL DE FLOTA
+   Lógica correcta: TODO en la BD es con TRACTOCAR.
+   - Placa BAJA = viaje interior→costa (registrado con cualquier cliente)
+   - Placa SUBE = viaje costa→interior (registrado en datos de Tractocar)
+   - FUGA = placa bajó a costa, pero el SIGUIENTE viaje en datos tiene
+             origen NO costa → subió con competidor (ese viaje no está en BD)
+   - RETORNO = siguiente viaje tiene origen costa → subió con Tractocar ✅
+   - PENDIENTE = sin viaje posterior en datos (placa aún en costa)
    ====================================================== */
 var flotaSelectedPlaca = null;
 
-/* Paleta de colores por cliente — más usados primero */
 var FLOTA_COLORS = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ec4899',
                     '#06b6d4','#84cc16','#f97316','#e11d48','#0ea5e9'];
 var _flotaColorMap = {};
@@ -2521,239 +2523,253 @@ function flotaColor(cod){
   return _flotaColorMap[cod];
 }
 
-/* Clasifica una ruta como BAJA (interior→costa), SUBE (costa→interior) u OTRA */
-var COSTA_KEYS  = ['CARTAGENA','BARRANQUILLA','SANTA MARTA','MEDELLIN','BELLO','ITAGUI','RIONEGRO'];
-var INTERI_KEYS = ['MADRID','BOGOTA','CALI','YUMBO','PALMIRA','PEREIRA','BUCARAMANGA','VILLAVICENCIO'];
-function dirRuta(ori, des){
-  var oriC = (ori||'').toUpperCase(), desC = (des||'').toUpperCase();
-  var oriEsInter = INTERI_KEYS.some(function(k){return oriC.indexOf(k)>=0;});
-  var desEsCosta = COSTA_KEYS.some(function(k){return desC.indexOf(k)>=0;});
-  var oriEsCosta = COSTA_KEYS.some(function(k){return oriC.indexOf(k)>=0;});
-  var desEsInter = INTERI_KEYS.some(function(k){return desC.indexOf(k)>=0;});
-  if(oriEsInter && desEsCosta) return 'BAJA';
-  if(oriEsCosta && desEsInter) return 'SUBE';
+var COSTA_KEYS  = ['CARTAGENA','BARRANQUILLA','SANTA MARTA'];
+var INTERI_KEYS = ['MADRID','BOGOTA','CALI','YUMBO','PALMIRA','PEREIRA',
+                   'BUCARAMANGA','VILLAVICENCIO','LA ESTRELLA','MEDELLIN',
+                   'ITAGUI','BELLO','RIONEGRO','MANIZALES'];
+
+function esCosta(ciudad){
+  var c=(ciudad||'').toUpperCase();
+  return COSTA_KEYS.some(function(k){return c.indexOf(k)>=0;});
+}
+function esInter(ciudad){
+  var c=(ciudad||'').toUpperCase();
+  return INTERI_KEYS.some(function(k){return c.indexOf(k)>=0;});
+}
+function dirRuta(ori,des){
+  if(esInter(ori) && esCosta(des)) return 'BAJA';
+  if(esCosta(ori) && esInter(des)) return 'SUBE';
+  if(esCosta(ori)) return 'SALE_COSTA';
   return 'OTRA';
 }
 
 function initFlota(){
-  var sel = document.getElementById('flotaClienteSel');
-  var clientes = window.FLOTA_CLIENTES || [];
-  sel.innerHTML = '<option value="">-- Selecciona cliente --</option>';
+  var sel=document.getElementById('flotaClienteSel');
+  var clientes=window.FLOTA_CLIENTES||[];
+  sel.innerHTML='<option value="">-- Todos los clientes --</option>';
   clientes.forEach(function(c){
     var opt=document.createElement('option');
     opt.value=c; opt.textContent=clientLabel(c);
     if(c==='MILP') opt.selected=true;
     sel.appendChild(opt);
   });
-
-  // Poblar rutas únicas disponibles
-  var rutaSel = document.getElementById('flotaRutaSel');
-  var rutasSet = {};
-  var raw = window.FLOTA || {};
-  Object.keys(raw).forEach(function(p){
-    (raw[p]||[]).forEach(function(t){
-      var dir=dirRuta(t.ori,t.des);
-      if(dir!=='OTRA') rutasSet[dir+': '+t.ori+' → '+t.des] = {ori:t.ori,des:t.des,dir:dir};
-    });
-  });
-  rutaSel.innerHTML='<option value="">Todas las rutas</option>';
-  var dirs = ['BAJA','SUBE','OTRA'];
-  dirs.forEach(function(dir){
-    Object.keys(rutasSet).filter(function(k){return rutasSet[k].dir===dir;})
-      .sort().slice(0,30)
-      .forEach(function(k){
-        var opt=document.createElement('option');
-        opt.value=k; opt.textContent=k;
-        rutaSel.appendChild(opt);
-      });
-  });
-
   buildFlota();
 }
 
-function buildFlota(){
-  var raw       = window.FLOTA || {};
-  var refCod    = document.getElementById('flotaClienteSel').value;
-  var estadoFil = document.getElementById('flotaEstadoSel').value;
-  var rutaFil   = document.getElementById('flotaRutaSel').value;
+/* Analiza una placa y devuelve su estado de vuelta desde Costa */
+function analizarPlaca(placa, refCod){
+  var raw=window.FLOTA||{};
+  var trips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
 
-  if(!refCod){
-    document.getElementById('tbodyFlota').innerHTML =
-      '<tr><td colspan="8" style="padding:24px;text-align:center;color:#475569">Selecciona un cliente de referencia arriba</td></tr>';
-    document.getElementById('theadFlota').innerHTML='';
-    document.getElementById('flotaKpi').innerHTML='';
-    return;
+  // Filtrar por cliente si se eligió uno
+  var bajaTrips=trips.filter(function(t){
+    return dirRuta(t.ori,t.des)==='BAJA' && (!refCod || t.cod===refCod);
+  });
+  if(!bajaTrips.length) return null;
+
+  // Último viaje de bajada con el cliente seleccionado
+  var lastBaja=bajaTrips[bajaTrips.length-1];
+
+  // Siguiente viaje de la placa DESPUÉS de esa bajada
+  var sigViaje=null;
+  for(var i=0;i<trips.length;i++){
+    if(trips[i].f>lastBaja.f){sigViaje=trips[i];break;}
   }
 
-  /* Para cada placa: encontrar el último viaje con refCod,
-     y ver qué hizo la placa DESPUÉS de ese viaje */
-  var placas = Object.keys(raw).filter(function(p){
-    return (raw[p]||[]).some(function(t){ return t.cod===refCod; });
-  });
-
-  var filas = [];
-  placas.forEach(function(placa){
-    var trips = raw[placa] || [];
-    // Todos los viajes con refCod, de más reciente a más antiguo
-    var refTrips = trips.filter(function(t){ return t.cod===refCod; });
-    refTrips.sort(function(a,b){ return b.f.localeCompare(a.f); });
-    var lastRef = refTrips[0];
-    if(!lastRef) return;
-
-    // Filtrar por ruta si se seleccionó
-    if(rutaFil){
-      var partes = rutaFil.split(': ');
-      var rutaOri = partes.length>1 ? partes[1].split(' → ')[0] : '';
-      var rutaDes = partes.length>1 ? partes[1].split(' → ')[1] : '';
-      if(lastRef.ori!==rutaOri || lastRef.des!==rutaDes) return;
-    }
-
-    // Siguiente viaje de la placa DESPUÉS del último viaje con refCod
-    var sigViaje = null;
-    for(var i=0;i<trips.length;i++){
-      if(trips[i].f > lastRef.f && trips[i].man !== lastRef.man){
-        sigViaje=trips[i]; break;
-      }
-    }
-
-    var estado, estadoLabel, estadoCol;
-    if(!sigViaje){
-      estado='PENDIENTE'; estadoLabel='⏳ Pendiente'; estadoCol='#f59e0b';
-    } else if(sigViaje.cod===refCod){
-      estado='OK'; estadoLabel='✓ Fidelizada'; estadoCol='#4ade80';
+  var estado,estadoLabel,estadoCol;
+  if(!sigViaje){
+    // Sin datos posteriores → placa está en costa, esperando
+    estado='PENDIENTE'; estadoLabel='⏳ En Costa'; estadoCol='#f59e0b';
+  } else {
+    var origenSig=(sigViaje.ori||'').toUpperCase();
+    if(esCosta(origenSig)){
+      // Siguiente viaje sale desde costa → subió CON TRACTOCAR
+      estado='RETORNO'; estadoLabel='✓ Retorno Tractocar'; estadoCol='#4ade80';
     } else {
-      estado='FUGA'; estadoLabel='✗ FUGA'; estadoCol='#ef4444';
+      // Siguiente viaje sale desde interior sin haber aparecido saliendo de costa → FUGA
+      estado='FUGA'; estadoLabel='✗ FUGA (subió con otro)'; estadoCol='#ef4444';
     }
-
-    if(estadoFil && estado!==estadoFil) return;
-
-    filas.push({
-      placa:placa,
-      lastRef:lastRef,
-      sigViaje:sigViaje,
-      estado:estado,
-      estadoLabel:estadoLabel,
-      estadoCol:estadoCol,
-      dir:dirRuta(lastRef.ori,lastRef.des),
-    });
-  });
-
-  // KPI
-  var nOK=0,nFuga=0,nPend=0;
-  filas.forEach(function(f){
-    if(f.estado==='OK')nOK++;
-    else if(f.estado==='FUGA')nFuga++;
-    else nPend++;
-  });
-  var kpiEl=document.getElementById('flotaKpi');
-  kpiEl.innerHTML=
-    kpi3('PLACAS CON '+clientLabel(refCod), filas.length, '#60a5fa')+
-    kpi3('FUGAS', nFuga, '#ef4444')+
-    kpi3('FIDELIZADAS', nOK, '#4ade80')+
-    kpi3('PENDIENTES', nPend, '#f59e0b');
-  function kpi3(lbl,val,col){
-    return '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:6px 12px">'+
-      '<div style="color:#475569;font-size:.6rem;font-weight:700">'+lbl+'</div>'+
-      '<div style="color:'+col+';font-size:.95rem;font-weight:800">'+val+'</div></div>';
   }
 
-  // Sort: FUGA primero, luego PENDIENTE, luego OK
-  var ORD={FUGA:0,PENDIENTE:1,OK:2};
-  filas.sort(function(a,b){ return (ORD[a.estado]||0)-(ORD[b.estado]||0) || b.lastRef.f.localeCompare(a.lastRef.f); });
+  return {
+    placa:placa,
+    lastBaja:lastBaja,
+    sigViaje:sigViaje,
+    estado:estado,
+    estadoLabel:estadoLabel,
+    estadoCol:estadoCol,
+    clienteBaja:lastBaja.cod,
+    clienteSig:sigViaje?sigViaje.cod:null,
+  };
+}
 
-  // Header
-  var thS='background:#0a1520;color:#94a3b8;font-size:.7rem;font-weight:700;padding:8px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap;';
-  var thead=document.getElementById('theadFlota');
-  thead.innerHTML='<tr>'+
-    '<th style="'+thS+'text-align:left">PLACA</th>'+
-    '<th style="'+thS+'text-align:left">ÚLTIMO VIAJE CON '+clientLabel(refCod).toUpperCase()+'</th>'+
-    '<th style="'+thS+'">FECHA</th>'+
-    '<th style="'+thS+'">DIRECCIÓN</th>'+
-    '<th style="'+thS+'text-align:left;color:#94a3b8">SIGUIENTE VIAJE</th>'+
-    '<th style="'+thS+'">FECHA SIG.</th>'+
-    '<th style="'+thS+'text-align:left">CON QUIÉN</th>'+
-    '<th style="'+thS+'text-align:center">ESTADO</th>'+
+function buildFlota(){
+  var raw=window.FLOTA||{};
+  var refCod=document.getElementById('flotaClienteSel').value;
+  var estadoFil=document.getElementById('flotaEstadoSel').value;
+
+  // Analizar todas las placas
+  var todas=Object.keys(raw).map(function(p){return analizarPlaca(p,refCod);}).filter(Boolean);
+
+  // Resumen global (siempre visible)
+  var nBaja=todas.length;
+  var nRetorno=todas.filter(function(f){return f.estado==='RETORNO';}).length;
+  var nFuga=todas.filter(function(f){return f.estado==='FUGA';}).length;
+  var nPend=todas.filter(function(f){return f.estado==='PENDIENTE';}).length;
+  var pctFuga=nBaja>0?Math.round(nFuga/nBaja*100):0;
+  var pctRet=nBaja>0?Math.round(nRetorno/nBaja*100):0;
+
+  function kpiBox(lbl,val,sub,col){
+    return '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:10px;padding:10px 16px;min-width:110px">'+
+      '<div style="color:#475569;font-size:.6rem;font-weight:700;letter-spacing:.06em">'+lbl+'</div>'+
+      '<div style="color:'+col+';font-size:1.1rem;font-weight:800;line-height:1.2">'+val+'</div>'+
+      (sub?'<div style="color:'+col+';font-size:.65rem;opacity:.8">'+sub+'</div>':'')+
+      '</div>';
+  }
+  document.getElementById('flotaKpi').innerHTML=
+    kpiBox('PLACAS BAJARON A COSTA',nBaja,'viajes con Tractocar','#60a5fa')+
+    kpiBox('RETORNARON CON TRACTOCAR',nRetorno,pctRet+'% de las bajadas','#4ade80')+
+    kpiBox('FUGA (subieron con otro)',nFuga,pctFuga+'% de las bajadas','#ef4444')+
+    kpiBox('AÚN EN COSTA',nPend,'sin retorno en datos','#f59e0b');
+
+  // Resumen por cliente del viaje de BAJADA
+  buildResumenClientes(todas);
+
+  // Filtrar para la tabla detalle
+  var filas=todas.filter(function(f){
+    return !estadoFil || f.estado===estadoFil;
+  });
+
+  var ORD={FUGA:0,PENDIENTE:1,RETORNO:2};
+  filas.sort(function(a,b){
+    return (ORD[a.estado]||0)-(ORD[b.estado]||0)||b.lastBaja.f.localeCompare(a.lastBaja.f);
+  });
+
+  var thS='background:#0a1520;color:#94a3b8;font-size:.7rem;font-weight:700;padding:8px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap';
+  document.getElementById('theadFlota').innerHTML='<tr>'+
+    '<th style="'+thS+';text-align:left">PLACA</th>'+
+    '<th style="'+thS+';text-align:left">ÚLTIMO VIAJE BAJADA</th>'+
+    '<th style="'+thS+';text-align:center">CLIENTE BAJADA</th>'+
+    '<th style="'+thS+';text-align:center">FECHA BAJADA</th>'+
+    '<th style="'+thS+';text-align:left">SIGUIENTE VIAJE EN DATOS</th>'+
+    '<th style="'+thS+';text-align:center">CLIENTE SIG.</th>'+
+    '<th style="'+thS+';text-align:center">FECHA SIG.</th>'+
+    '<th style="'+thS+';text-align:center">ESTADO</th>'+
     '</tr>';
 
-  // Rows
   var tbody=document.getElementById('tbodyFlota');
   tbody.innerHTML='';
   if(!filas.length){
-    tbody.innerHTML='<tr><td colspan="8" style="padding:24px;text-align:center;color:#475569">Sin datos para los filtros seleccionados.</td></tr>';
+    tbody.innerHTML='<tr><td colspan="8" style="padding:24px;text-align:center;color:#475569">Sin resultados con los filtros seleccionados.</td></tr>';
     return;
   }
 
   filas.forEach(function(f,ri){
     var tr=document.createElement('tr');
     var isSelected=(flotaSelectedPlaca===f.placa);
-    var baseBg=ri%2===0?'#070e18':'#050b14';
-    tr.style.cssText='border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2040':baseBg)+';cursor:pointer';
-    var refColor=flotaColor(refCod);
-    var sigColor=f.sigViaje?flotaColor(f.sigViaje.cod):'#475569';
-    var dirLabel=f.dir==='BAJA'?'▼ Baja costa':f.dir==='SUBE'?'▲ Sube interior':'↔ Otra';
-    var dirCol=f.dir==='BAJA'?'#38bdf8':f.dir==='SUBE'?'#a78bfa':'#64748b';
+    tr.style.cssText='border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2040':(ri%2===0?'#070e18':'#050b14'))+';cursor:pointer';
+    var cBColor=flotaColor(f.clienteBaja);
+    var cSColor=f.clienteSig?flotaColor(f.clienteSig):'#475569';
     tr.innerHTML=
       '<td style="padding:7px 10px;font-weight:700;color:#ffffff">'+f.placa+'</td>'+
-      '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.lastRef.ori+' → '+f.lastRef.des+'</td>'+
-      '<td style="padding:7px 10px;color:#cbd5e1;text-align:center">'+f.lastRef.f.slice(5)+'</td>'+
-      '<td style="padding:7px 10px;text-align:center;color:'+dirCol+';font-weight:700;font-size:.68rem">'+dirLabel+'</td>'+
+      '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.lastBaja.ori+' → '+f.lastBaja.des+'</td>'+
+      '<td style="padding:7px 10px;text-align:center"><span style="background:'+cBColor+'22;color:'+cBColor+';font-weight:700;font-size:.7rem;border-radius:4px;padding:2px 8px">'+clientLabel(f.clienteBaja)+'</span></td>'+
+      '<td style="padding:7px 10px;color:#cbd5e1;text-align:center;font-size:.72rem">'+f.lastBaja.f+'</td>'+
       (f.sigViaje?
         '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.sigViaje.ori+' → '+f.sigViaje.des+'</td>'+
-        '<td style="padding:7px 10px;color:#cbd5e1;text-align:center">'+f.sigViaje.f.slice(5)+'</td>'+
-        '<td style="padding:7px 10px;font-weight:700"><span style="background:'+sigColor+'22;color:'+sigColor+';border-radius:4px;padding:2px 8px">'+clientLabel(f.sigViaje.cod)+'</span></td>'
+        '<td style="padding:7px 10px;text-align:center"><span style="background:'+cSColor+'22;color:'+cSColor+';font-weight:700;font-size:.7rem;border-radius:4px;padding:2px 8px">'+clientLabel(f.clienteSig)+'</span></td>'+
+        '<td style="padding:7px 10px;color:#cbd5e1;text-align:center;font-size:.72rem">'+f.sigViaje.f+'</td>'
         :
+        '<td style="padding:7px 10px;color:#1e3a4e;font-size:.7rem">—</td>'+
         '<td style="padding:7px 10px;color:#1e3a4e">—</td>'+
-        '<td style="padding:7px 10px;color:#1e3a4e">—</td>'+
-        '<td style="padding:7px 10px;color:#475569;font-size:.68rem">Sin datos de retorno</td>'
+        '<td style="padding:7px 10px;color:#1e3a4e">—</td>'
       )+
-      '<td style="padding:7px 10px;text-align:center"><span style="background:'+f.estadoCol+'22;color:'+f.estadoCol+';font-weight:700;font-size:.7rem;border-radius:4px;padding:3px 10px">'+f.estadoLabel+'</span></td>';
-    tr.onclick=(function(p){ return function(){
+      '<td style="padding:7px 10px;text-align:center"><span style="background:'+f.estadoCol+'22;color:'+f.estadoCol+';font-weight:700;font-size:.68rem;border-radius:4px;padding:3px 10px">'+f.estadoLabel+'</span></td>';
+    tr.onclick=(function(p){return function(){
       flotaSelectedPlaca=(flotaSelectedPlaca===p)?null:p;
       buildFlota();
       if(flotaSelectedPlaca) buildFlotaDetalle(p);
       else document.getElementById('flotaDetalle').style.display='none';
-    }; })(f.placa);
+    };})(f.placa);
     tbody.appendChild(tr);
   });
   if(flotaSelectedPlaca && raw[flotaSelectedPlaca]) buildFlotaDetalle(flotaSelectedPlaca);
 }
 
+function buildResumenClientes(todas){
+  // Agrupa fugas por CLIENTE DEL VIAJE SIGUIENTE (el que se "llevó" la placa)
+  var fugasPor={};
+  todas.filter(function(f){return f.estado==='FUGA';}).forEach(function(f){
+    var c=f.clienteSig||'DESCONOCIDO';
+    fugasPor[c]=(fugasPor[c]||0)+1;
+  });
+  var retPor={};
+  todas.filter(function(f){return f.estado==='RETORNO';}).forEach(function(f){
+    var c=f.clienteSig||'?';
+    retPor[c]=(retPor[c]||0)+1;
+  });
+
+  var div=document.getElementById('flotaResumenClientes');
+  if(!div) return;
+  if(!Object.keys(fugasPor).length && !Object.keys(retPor).length){
+    div.innerHTML=''; return;
+  }
+
+  var html='<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;padding:12px;background:#060e18;border-radius:8px;border:1px solid #0e2030">';
+  html+='<div><div style="color:#ef4444;font-size:.7rem;font-weight:700;margin-bottom:6px">✗ FUGAS · Siguiente viaje de la placa fue con:</div>';
+  html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+  Object.keys(fugasPor).sort(function(a,b){return fugasPor[b]-fugasPor[a];}).forEach(function(c){
+    var col=flotaColor(c);
+    html+='<span style="background:'+col+'22;color:'+col+';border-radius:6px;padding:4px 12px;font-size:.72rem;font-weight:700">'+
+      clientLabel(c)+' <strong style="color:#ef4444">'+fugasPor[c]+'</strong></span>';
+  });
+  html+='</div></div>';
+
+  if(Object.keys(retPor).length){
+    html+='<div><div style="color:#4ade80;font-size:.7rem;font-weight:700;margin-bottom:6px">✓ RETORNOS · Viaje de subida con:</div>';
+    html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+    Object.keys(retPor).sort(function(a,b){return retPor[b]-retPor[a];}).forEach(function(c){
+      var col=flotaColor(c);
+      html+='<span style="background:'+col+'22;color:'+col+';border-radius:6px;padding:4px 12px;font-size:.72rem;font-weight:700">'+
+        clientLabel(c)+' <strong style="color:#4ade80">'+retPor[c]+'</strong></span>';
+    });
+    html+='</div></div>';
+  }
+  html+='</div>';
+  div.innerHTML=html;
+}
+
 function buildFlotaDetalle(placa){
-  var raw = window.FLOTA || {};
-  var trips = (raw[placa]||[]).slice().sort(function(a,b){return b.f.localeCompare(a.f);});
+  var raw=window.FLOTA||{};
+  var trips=(raw[placa]||[]).slice().sort(function(a,b){return b.f.localeCompare(a.f);});
   var det=document.getElementById('flotaDetalle');
   det.style.display='block';
   document.getElementById('flotaDetallePlaca').textContent=placa;
-
   var refCod=document.getElementById('flotaClienteSel').value;
   var thS='background:#060e16;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #0e1e2e;white-space:nowrap';
   document.getElementById('theadFlotaDet').innerHTML='<tr>'+
     '<th style="'+thS+';text-align:left">FECHA</th>'+
     '<th style="'+thS+';text-align:left">CLIENTE</th>'+
-    '<th style="'+thS+';text-align:left">ORIGEN</th>'+
-    '<th style="'+thS+';text-align:left">DESTINO</th>'+
-    '<th style="'+thS+'">DIRECCIÓN</th>'+
+    '<th style="'+thS+';text-align:left">ORIGEN → DESTINO</th>'+
+    '<th style="'+thS+';text-align:center">DIRECCIÓN</th>'+
     '<th style="'+thS+';text-align:right">VENTA</th>'+
-    '<th style="'+thS+';text-align:left">MANIFIESTO</th>'+
+    '<th style="'+thS+';text-align:left">MANIF.</th>'+
     '</tr>';
-
   var tbody=document.getElementById('tbodyFlotaDet');
   tbody.innerHTML='';
-  trips.forEach(function(t,ri){
+  trips.forEach(function(t){
     var isRef=(t.cod===refCod);
     var color=flotaColor(t.cod);
     var dir=dirRuta(t.ori,t.des);
-    var dirLabel=dir==='BAJA'?'▼ Baja':dir==='SUBE'?'▲ Sube':'↔';
-    var dirCol=dir==='BAJA'?'#38bdf8':dir==='SUBE'?'#a78bfa':'#64748b';
+    var dirLabel=dir==='BAJA'?'▼ Baja costa':dir==='SUBE'?'▲ Sube interior':dir==='SALE_COSTA'?'▲ Sale costa':'↔';
+    var dirCol=dir==='BAJA'?'#38bdf8':(dir==='SUBE'||dir==='SALE_COSTA')?'#a78bfa':'#64748b';
     var tr=document.createElement('tr');
     tr.style.cssText='border-bottom:1px solid #0a1820;background:'+(isRef?color+'14':'#040a11')+
-      (isRef?';border-left:3px solid '+color:'');
+      ';'+(isRef?'border-left:3px solid '+color+';':'border-left:3px solid transparent;');
     tr.innerHTML=
       '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.f+'</td>'+
-      '<td style="padding:5px 10px"><span style="background:'+color+'22;color:'+color+
-        ';font-weight:700;font-size:.72rem;border-radius:3px;padding:2px 7px">'+clientLabel(t.cod)+'</span></td>'+
-      '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.ori+'</td>'+
-      '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.des+'</td>'+
+      '<td style="padding:5px 10px"><span style="background:'+color+'22;color:'+color+';font-weight:700;font-size:.72rem;border-radius:3px;padding:2px 7px">'+clientLabel(t.cod)+'</span></td>'+
+      '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.ori+' → '+t.des+'</td>'+
       '<td style="padding:5px 10px;text-align:center;color:'+dirCol+';font-size:.72rem;font-weight:700">'+dirLabel+'</td>'+
       '<td style="padding:5px 10px;text-align:right;color:#e2e8f0;font-size:.72rem">'+formatCopCompact(t.v)+'</td>'+
       '<td style="padding:5px 10px;color:#475569;font-size:.68rem">'+t.man+'</td>';
