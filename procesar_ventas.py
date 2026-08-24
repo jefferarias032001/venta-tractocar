@@ -122,6 +122,11 @@ def main():
     df_p = df_p[df_p["Cod"].notna()].copy()
     df_p["Cod"] = df_p["Cod"].astype(str).str.strip()
 
+    # Agrupación GRUPO AJOVER antes de construir budget
+    GRUPO_AJOV     = "GRUPO_AJOV"
+    GRUPO_AJOV_CODS = {"AJOV", "NOCO", "CASC"}
+    df_p["Cod"] = df_p["Cod"].replace({c: GRUPO_AJOV for c in GRUPO_AJOV_CODS})
+
     budget = df_p.groupby("Cod").agg(
         PPTO       =("Venta total proyectada", "sum"),
         META_UTIL  =("Utilidad Total",         "sum"),
@@ -179,12 +184,17 @@ def main():
     # Alias: codigo fuente -> codigo presupuesto
     COD_ALIAS = {
         "COLP": "KIMB",   # KIMB cambió de nombre a COLP
+        "AJOV": GRUPO_AJOV,
+        "NOCO": GRUPO_AJOV,
+        "CASC": GRUPO_AJOV,
     }
     # Clientes que se convierten en operación propia (se sacan de NACIONAL)
     CLIENTES_OPERACION = {"JEMA"}
     # Clientes que siempre van a OTROS CLIENTES
     SIEMPRE_OTROS = {"CPA", "GDANE", "SOCO", "YUPI",
                      "ESEN_CR_ESPE", "CRESC", "LHCO", "MOIN", "ESEN_MB", "MECO"}
+    # Guardar código original ANTES del alias (lo usa la tab AJOVER)
+    u_nac["_CodOrig"] = u_nac["Cod"].copy()
     u_nac["Cod"] = u_nac["Cod"].replace(COD_ALIAS)
 
     if "Dia" not in u_nac.columns:
@@ -451,8 +461,10 @@ def main():
         if ori == "LA ESTRELLA":                    return "FIJOS MEDELLIN"
         return "ENTREGA A CLIENTES"
 
-    ajov_raw = u_nac[u_nac["Cod"].isin(["AJOV", "NOCO"])].copy()
+    ajov_raw = u_nac[u_nac["_CodOrig"].isin(["AJOV", "NOCO"])].copy()
     if not ajov_raw.empty:
+        # Usar código original para la clasificación (Cod fue aliasado a GRUPO_AJOV)
+        ajov_raw["Cod"] = ajov_raw["_CodOrig"]
         ajov_raw["TipoOp"] = ajov_raw.apply(clasificar_ajov_row, axis=1)
         ajov_hist_dict = {}
         ajov_rutas_dict = {}
@@ -471,9 +483,10 @@ def main():
                 int(grp["Manifiesto"].nunique()),
             ]
         for (ruta, tipo, mes, dia), grp in ajov_raw2.groupby(["Ruta", "TipoOp", "Mes", "Dia"]):
-            if str(ruta) not in ajov_rutas_dict:
-                ajov_rutas_dict[str(ruta)] = {"tipo": str(tipo), "data": {}}
-            ajov_rutas_dict[str(ruta)]["data"].setdefault(str(mes), {})[str(int(dia))] = [
+            clave = f"{tipo}|||{ruta}"
+            if clave not in ajov_rutas_dict:
+                ajov_rutas_dict[clave] = {"tipo": str(tipo), "ruta": str(ruta), "data": {}}
+            ajov_rutas_dict[clave]["data"].setdefault(str(mes), {})[str(int(dia))] = [
                 round(float(grp["AFacturar"].sum()), 0),
                 round(float(grp["Utilidad"].sum()), 0),
                 int(grp["Manifiesto"].nunique()),
@@ -484,6 +497,45 @@ def main():
         ajov_hist_dict = {}
         ajov_rutas_dict = {}
         print("  AJOVER: sin datos AJOV/NOCO")
+
+    # ---- 5b. FLOTA: seguimiento de placas por cliente ----
+    u_flota = u_nac[
+        u_nac["Placa"].notna() &
+        u_nac["Fecha"].notna() &
+        u_nac["Cod"].notna()
+    ].copy()
+    u_flota["_placa"] = u_flota["Placa"].astype(str).str.strip().str.upper()
+    u_flota = u_flota[
+        u_flota["_placa"].str.len() >= 5
+    ]
+    # Limitar a los últimos 4 meses para mantener el payload razonable
+    meses_flota = sorted(u_flota["Mes"].dropna().unique())
+    meses_flota = meses_flota[-4:] if len(meses_flota) > 4 else meses_flota
+    u_flota = u_flota[u_flota["Mes"].isin(meses_flota)].copy()
+
+    flota_dict: dict = {}
+    for _, row in u_flota.iterrows():
+        placa = str(row["_placa"])
+        ori = str(row.get("Origen", "") or "").strip()[:30].upper()
+        des = str(row.get("Destino", "") or "").strip()[:30].upper()
+        fecha_iso = str(row.get("FechaISO", ""))[:10]
+        cod = str(row["Cod"])
+        venta = round(float(row["AFacturar"]), 0)
+        man = str(row.get("Manifiesto", ""))
+        flota_dict.setdefault(placa, []).append({
+            "f": fecha_iso, "cod": cod,
+            "ori": ori, "des": des,
+            "v": venta, "man": man
+        })
+    for p in flota_dict:
+        flota_dict[p].sort(key=lambda x: x["f"])
+
+    # Clientes únicos con placas
+    flota_clientes = sorted({
+        trip["cod"] for trips in flota_dict.values() for trip in trips
+        if trip["cod"] and trip["cod"] not in ("nan", "None", "OTROS CLIENTES")
+    })
+    print(f"  FLOTA: {len(flota_dict):,} placas en {len(meses_flota)} meses, {len(flota_clientes)} clientes")
 
     # ---- 6. PREPARAR PAYLOAD PARA JS ----
     # Budget dict por Cod
@@ -544,6 +596,8 @@ def main():
         f"window.OPS_HISTORICO={json.dumps(ops_hist, ensure_ascii=False)};"
         f"window.AJOV_HIST={json.dumps(ajov_hist_dict, ensure_ascii=False)};"
         f"window.AJOV_RUTAS={json.dumps(ajov_rutas_dict, ensure_ascii=False)};"
+        f"window.FLOTA={json.dumps(flota_dict, ensure_ascii=False)};"
+        f"window.FLOTA_CLIENTES={json.dumps(flota_clientes, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
         f"nombreMes:'{nombre_mes}',labelHoy:'{label_hoy}',labelAyer:'{label_ayer}',"
@@ -819,6 +873,7 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
   <button class="view-tab" onclick="setView('perdidas',this)">&#9888; Manifiestos a Pérdida</button>
   <button class="view-tab" onclick="setView('historico',this)">&#9196; Histórico</button>
   <button class="view-tab" onclick="setView('ajover',this)">&#9672; AJOVER</button>
+  <button class="view-tab" onclick="setView('flota',this)">&#9951; Control de Flota</button>
 </div>
 
 <div id="viewTabla">
@@ -944,6 +999,61 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
   </div>
 </div>
 
+<!-- ==================== CONTROL DE FLOTA ==================== -->
+<div id="viewFlota" style="display:none;padding:14px 10px">
+
+  <!-- Controles -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+    <span style="color:#60a5fa;font-size:.85rem;font-weight:700;letter-spacing:.05em">CONTROL DE FLOTA</span>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Cliente referencia:</span>
+      <select id="flotaClienteSel" onchange="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Ruta:</span>
+      <select id="flotaRutaSel" onchange="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+        <option value="">Todas las rutas</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Estado:</span>
+      <select id="flotaEstadoSel" onchange="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+        <option value="">Todos</option>
+        <option value="FUGA">Fugas</option>
+        <option value="OK">Fidelizadas</option>
+        <option value="PENDIENTE">Pendientes</option>
+      </select>
+    </div>
+    <div id="flotaKpi" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
+  </div>
+
+  <!-- Tabla principal de placas -->
+  <div style="overflow-x:auto">
+    <table style="border-collapse:collapse;font-size:.75rem;min-width:900px;width:100%">
+      <thead id="theadFlota"></thead>
+      <tbody id="tbodyFlota"></tbody>
+    </table>
+  </div>
+
+  <!-- Detalle: timeline de viajes de la placa seleccionada -->
+  <div id="flotaDetalle" style="margin-top:20px;display:none">
+    <div style="color:#60a5fa;font-size:.78rem;font-weight:700;margin-bottom:8px;padding:8px 4px;border-top:1px solid #1e3a4e">
+      HISTORIAL DE VIAJES · PLACA <span id="flotaDetallePlaca" style="color:#f0c060"></span>
+      <span style="color:#475569;font-size:.68rem;margin-left:8px">(clic en otra fila para cambiar · clic en la misma para cerrar)</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="border-collapse:collapse;font-size:.73rem;min-width:700px;width:100%">
+        <thead id="theadFlotaDet"></thead>
+        <tbody id="tbodyFlotaDet"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <script>
 /*__DATOS__*/
 
@@ -1023,11 +1133,14 @@ function calcFila(cod){
   };
 }
 
+var COD_LABEL = {'GRUPO_AJOV': 'GRUPO AJOVER'};
+function clientLabel(cod){ return COD_LABEL[cod] || cod; }
+
 function renderRow(r, cls){
   var tr = document.createElement('tr');
   if(cls) tr.className = cls;
   tr.innerHTML =
-    '<td>'+r.Cod+'</td>'+
+    '<td>'+clientLabel(r.Cod)+'</td>'+
     '<td>'+mn(r.PPTO)+'</td>'+
     '<td>'+mn(r.PROYECCION)+'</td>'+
     '<td>'+arr(r.DIF_PROV_PPTO)+'</td>'+
@@ -1223,7 +1336,7 @@ function buildClientList(){
       rebuildAll();
     };
     li.appendChild(cb);
-    li.appendChild(document.createTextNode(c));
+    li.appendChild(document.createTextNode(clientLabel(c)));
     ul.appendChild(li);
   });
 }
@@ -1464,6 +1577,7 @@ function setView(v, btn){
   document.getElementById('viewPerdidas').style.display  = v==='perdidas'  ? '' : 'none';
   document.getElementById('viewHistorico').style.display = v==='historico' ? '' : 'none';
   document.getElementById('viewAjover').style.display    = v==='ajover'    ? '' : 'none';
+  document.getElementById('viewFlota').style.display     = v==='flota'     ? '' : 'none';
   if(v==='perdidas'){
     var inp=document.getElementById('inputUserName');
     if(inp) inp.value=localStorage.getItem('tc_userName')||'';
@@ -1471,6 +1585,7 @@ function setView(v, btn){
   }
   if(v==='historico') buildHistorico();
   if(v==='ajover') buildAjover();
+  if(v==='flota') initFlota();
 }
 
 /* ---- Toggle OTROS detalle ---- */
@@ -2296,20 +2411,21 @@ function buildAjovRutas(allMeses, mesActIdx){
   var tbody   = document.getElementById('tbodyAjovRutas');
   if(!thead||!tbody) return;
 
-  // Filtrar rutas por tipo seleccionado
-  var rutas = Object.keys(raw).filter(function(r){
-    return !selectedAjovTipo || raw[r].tipo === selectedAjovTipo;
+  // Filtrar claves por tipo seleccionado
+  var claves = Object.keys(raw).filter(function(k){
+    return !selectedAjovTipo || raw[k].tipo === selectedAjovTipo;
   });
 
-  if(!rutas.length || !allMeses.length){
+  if(!claves.length || !allMeses.length){
     titulo.style.display='none';
     thead.innerHTML=''; tbody.innerHTML=''; return;
   }
   titulo.style.display='block';
   label.textContent = selectedAjovTipo ? ('RUTAS · '+selectedAjovTipo) : 'RUTAS · Todas las operaciones';
 
-  function getRutaVal(ruta, mes){
-    var mdata=(raw[ruta]||{}).data||{};
+  // Usar clave para acceder a datos; label visible es raw[k].ruta
+  function getRutaVal(clave, mes){
+    var mdata=(raw[clave]||{}).data||{};
     var mdat=mdata[mes]||{};
     var V=0, N=0;
     for(var day=d1; day<=d2; day++){
@@ -2319,6 +2435,7 @@ function buildAjovRutas(allMeses, mesActIdx){
     return isVenta ? V : N;
   }
   function fmtVal(v){ return isVenta ? formatCopCompact(v) : NUM.format(v); }
+  var rutas = claves; // alias para el resto del código
 
   // Sort state for rutas table
   if(typeof window._ajovRSort==='undefined'){ window._ajovRSort={col:null,dir:-1}; }
@@ -2346,7 +2463,7 @@ function buildAjovRutas(allMeses, mesActIdx){
     if(!col || col==='rmes'+(mesActIdx)){
       return dir*(getRutaVal(b,allMeses[mesActIdx])-getRutaVal(a,allMeses[mesActIdx]));
     }
-    if(col==='ruta'){ return dir*a.localeCompare(b); }
+    if(col==='ruta'){ return dir*(raw[a].ruta||a).localeCompare(raw[b].ruta||b); }
     if(col==='rdif'){
       var va=getRutaVal(a,allMeses[mesActIdx])-(mesActIdx>0?getRutaVal(a,allMeses[mesActIdx-1]):0);
       var vb=getRutaVal(b,allMeses[mesActIdx])-(mesActIdx>0?getRutaVal(b,allMeses[mesActIdx-1]):0);
@@ -2371,7 +2488,7 @@ function buildAjovRutas(allMeses, mesActIdx){
     var dif  = vAct-vAnt, pct=vAnt>0?(dif/vAnt*100):(vAct>0?100:0);
     var dCol = dif>=0?'#4ade80':'#ef4444';
 
-    var html = '<td style="padding:5px 10px;color:#e2e8f0;white-space:nowrap;font-size:.72rem">'+ruta+'</td>';
+    var html = '<td style="padding:5px 10px;color:#e2e8f0;white-space:nowrap;font-size:.72rem">'+(raw[ruta].ruta||ruta)+'</td>';
     allMeses.forEach(function(mes, mi){
       var v    = getRutaVal(ruta, mes);
       var isAct= (mi===mesActIdx);
@@ -2383,6 +2500,263 @@ function buildAjovRutas(allMeses, mesActIdx){
     html += '<td style="text-align:right;padding:5px 10px;color:'+dCol+';font-size:.72rem;font-weight:700;white-space:nowrap">'+(dif>=0?'+':'')+fmtVal(dif)+'</td>';
     html += '<td style="text-align:right;padding:5px 8px;color:'+dCol+';font-size:.72rem;font-weight:700;white-space:nowrap">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</td>';
     tr.innerHTML = html;
+    tbody.appendChild(tr);
+  });
+}
+
+/* ======================================================
+   CONTROL DE FLOTA
+   ====================================================== */
+var flotaSelectedPlaca = null;
+
+/* Paleta de colores por cliente — más usados primero */
+var FLOTA_COLORS = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ec4899',
+                    '#06b6d4','#84cc16','#f97316','#e11d48','#0ea5e9'];
+var _flotaColorMap = {};
+function flotaColor(cod){
+  if(!_flotaColorMap[cod]){
+    var idx=Object.keys(_flotaColorMap).length % FLOTA_COLORS.length;
+    _flotaColorMap[cod]=FLOTA_COLORS[idx];
+  }
+  return _flotaColorMap[cod];
+}
+
+/* Clasifica una ruta como BAJA (interior→costa), SUBE (costa→interior) u OTRA */
+var COSTA_KEYS  = ['CARTAGENA','BARRANQUILLA','SANTA MARTA','MEDELLIN','BELLO','ITAGUI','RIONEGRO'];
+var INTERI_KEYS = ['MADRID','BOGOTA','CALI','YUMBO','PALMIRA','PEREIRA','BUCARAMANGA','VILLAVICENCIO'];
+function dirRuta(ori, des){
+  var oriC = (ori||'').toUpperCase(), desC = (des||'').toUpperCase();
+  var oriEsInter = INTERI_KEYS.some(function(k){return oriC.indexOf(k)>=0;});
+  var desEsCosta = COSTA_KEYS.some(function(k){return desC.indexOf(k)>=0;});
+  var oriEsCosta = COSTA_KEYS.some(function(k){return oriC.indexOf(k)>=0;});
+  var desEsInter = INTERI_KEYS.some(function(k){return desC.indexOf(k)>=0;});
+  if(oriEsInter && desEsCosta) return 'BAJA';
+  if(oriEsCosta && desEsInter) return 'SUBE';
+  return 'OTRA';
+}
+
+function initFlota(){
+  var sel = document.getElementById('flotaClienteSel');
+  var clientes = window.FLOTA_CLIENTES || [];
+  sel.innerHTML = '<option value="">-- Selecciona cliente --</option>';
+  clientes.forEach(function(c){
+    var opt=document.createElement('option');
+    opt.value=c; opt.textContent=clientLabel(c);
+    if(c==='MILP') opt.selected=true;
+    sel.appendChild(opt);
+  });
+
+  // Poblar rutas únicas disponibles
+  var rutaSel = document.getElementById('flotaRutaSel');
+  var rutasSet = {};
+  var raw = window.FLOTA || {};
+  Object.keys(raw).forEach(function(p){
+    (raw[p]||[]).forEach(function(t){
+      var dir=dirRuta(t.ori,t.des);
+      if(dir!=='OTRA') rutasSet[dir+': '+t.ori+' → '+t.des] = {ori:t.ori,des:t.des,dir:dir};
+    });
+  });
+  rutaSel.innerHTML='<option value="">Todas las rutas</option>';
+  var dirs = ['BAJA','SUBE','OTRA'];
+  dirs.forEach(function(dir){
+    Object.keys(rutasSet).filter(function(k){return rutasSet[k].dir===dir;})
+      .sort().slice(0,30)
+      .forEach(function(k){
+        var opt=document.createElement('option');
+        opt.value=k; opt.textContent=k;
+        rutaSel.appendChild(opt);
+      });
+  });
+
+  buildFlota();
+}
+
+function buildFlota(){
+  var raw       = window.FLOTA || {};
+  var refCod    = document.getElementById('flotaClienteSel').value;
+  var estadoFil = document.getElementById('flotaEstadoSel').value;
+  var rutaFil   = document.getElementById('flotaRutaSel').value;
+
+  if(!refCod){
+    document.getElementById('tbodyFlota').innerHTML =
+      '<tr><td colspan="8" style="padding:24px;text-align:center;color:#475569">Selecciona un cliente de referencia arriba</td></tr>';
+    document.getElementById('theadFlota').innerHTML='';
+    document.getElementById('flotaKpi').innerHTML='';
+    return;
+  }
+
+  /* Para cada placa: encontrar el último viaje con refCod,
+     y ver qué hizo la placa DESPUÉS de ese viaje */
+  var placas = Object.keys(raw).filter(function(p){
+    return (raw[p]||[]).some(function(t){ return t.cod===refCod; });
+  });
+
+  var filas = [];
+  placas.forEach(function(placa){
+    var trips = raw[placa] || [];
+    // Todos los viajes con refCod, de más reciente a más antiguo
+    var refTrips = trips.filter(function(t){ return t.cod===refCod; });
+    refTrips.sort(function(a,b){ return b.f.localeCompare(a.f); });
+    var lastRef = refTrips[0];
+    if(!lastRef) return;
+
+    // Filtrar por ruta si se seleccionó
+    if(rutaFil){
+      var partes = rutaFil.split(': ');
+      var rutaOri = partes.length>1 ? partes[1].split(' → ')[0] : '';
+      var rutaDes = partes.length>1 ? partes[1].split(' → ')[1] : '';
+      if(lastRef.ori!==rutaOri || lastRef.des!==rutaDes) return;
+    }
+
+    // Siguiente viaje de la placa DESPUÉS del último viaje con refCod
+    var sigViaje = null;
+    for(var i=0;i<trips.length;i++){
+      if(trips[i].f > lastRef.f && trips[i].man !== lastRef.man){
+        sigViaje=trips[i]; break;
+      }
+    }
+
+    var estado, estadoLabel, estadoCol;
+    if(!sigViaje){
+      estado='PENDIENTE'; estadoLabel='⏳ Pendiente'; estadoCol='#f59e0b';
+    } else if(sigViaje.cod===refCod){
+      estado='OK'; estadoLabel='✓ Fidelizada'; estadoCol='#4ade80';
+    } else {
+      estado='FUGA'; estadoLabel='✗ FUGA'; estadoCol='#ef4444';
+    }
+
+    if(estadoFil && estado!==estadoFil) return;
+
+    filas.push({
+      placa:placa,
+      lastRef:lastRef,
+      sigViaje:sigViaje,
+      estado:estado,
+      estadoLabel:estadoLabel,
+      estadoCol:estadoCol,
+      dir:dirRuta(lastRef.ori,lastRef.des),
+    });
+  });
+
+  // KPI
+  var nOK=0,nFuga=0,nPend=0;
+  filas.forEach(function(f){
+    if(f.estado==='OK')nOK++;
+    else if(f.estado==='FUGA')nFuga++;
+    else nPend++;
+  });
+  var kpiEl=document.getElementById('flotaKpi');
+  kpiEl.innerHTML=
+    kpi3('PLACAS CON '+clientLabel(refCod), filas.length, '#60a5fa')+
+    kpi3('FUGAS', nFuga, '#ef4444')+
+    kpi3('FIDELIZADAS', nOK, '#4ade80')+
+    kpi3('PENDIENTES', nPend, '#f59e0b');
+  function kpi3(lbl,val,col){
+    return '<div style="background:#0d1a26;border:1px solid #1e3a4e;border-radius:8px;padding:6px 12px">'+
+      '<div style="color:#475569;font-size:.6rem;font-weight:700">'+lbl+'</div>'+
+      '<div style="color:'+col+';font-size:.95rem;font-weight:800">'+val+'</div></div>';
+  }
+
+  // Sort: FUGA primero, luego PENDIENTE, luego OK
+  var ORD={FUGA:0,PENDIENTE:1,OK:2};
+  filas.sort(function(a,b){ return (ORD[a.estado]||0)-(ORD[b.estado]||0) || b.lastRef.f.localeCompare(a.lastRef.f); });
+
+  // Header
+  var thS='background:#0a1520;color:#94a3b8;font-size:.7rem;font-weight:700;padding:8px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap;';
+  var thead=document.getElementById('theadFlota');
+  thead.innerHTML='<tr>'+
+    '<th style="'+thS+'text-align:left">PLACA</th>'+
+    '<th style="'+thS+'text-align:left">ÚLTIMO VIAJE CON '+clientLabel(refCod).toUpperCase()+'</th>'+
+    '<th style="'+thS+'">FECHA</th>'+
+    '<th style="'+thS+'">DIRECCIÓN</th>'+
+    '<th style="'+thS+'text-align:left;color:#94a3b8">SIGUIENTE VIAJE</th>'+
+    '<th style="'+thS+'">FECHA SIG.</th>'+
+    '<th style="'+thS+'text-align:left">CON QUIÉN</th>'+
+    '<th style="'+thS+'text-align:center">ESTADO</th>'+
+    '</tr>';
+
+  // Rows
+  var tbody=document.getElementById('tbodyFlota');
+  tbody.innerHTML='';
+  if(!filas.length){
+    tbody.innerHTML='<tr><td colspan="8" style="padding:24px;text-align:center;color:#475569">Sin datos para los filtros seleccionados.</td></tr>';
+    return;
+  }
+
+  filas.forEach(function(f,ri){
+    var tr=document.createElement('tr');
+    var isSelected=(flotaSelectedPlaca===f.placa);
+    var baseBg=ri%2===0?'#070e18':'#050b14';
+    tr.style.cssText='border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2040':baseBg)+';cursor:pointer';
+    var refColor=flotaColor(refCod);
+    var sigColor=f.sigViaje?flotaColor(f.sigViaje.cod):'#475569';
+    var dirLabel=f.dir==='BAJA'?'▼ Baja costa':f.dir==='SUBE'?'▲ Sube interior':'↔ Otra';
+    var dirCol=f.dir==='BAJA'?'#38bdf8':f.dir==='SUBE'?'#a78bfa':'#64748b';
+    tr.innerHTML=
+      '<td style="padding:7px 10px;font-weight:700;color:#ffffff">'+f.placa+'</td>'+
+      '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.lastRef.ori+' → '+f.lastRef.des+'</td>'+
+      '<td style="padding:7px 10px;color:#cbd5e1;text-align:center">'+f.lastRef.f.slice(5)+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;color:'+dirCol+';font-weight:700;font-size:.68rem">'+dirLabel+'</td>'+
+      (f.sigViaje?
+        '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.sigViaje.ori+' → '+f.sigViaje.des+'</td>'+
+        '<td style="padding:7px 10px;color:#cbd5e1;text-align:center">'+f.sigViaje.f.slice(5)+'</td>'+
+        '<td style="padding:7px 10px;font-weight:700"><span style="background:'+sigColor+'22;color:'+sigColor+';border-radius:4px;padding:2px 8px">'+clientLabel(f.sigViaje.cod)+'</span></td>'
+        :
+        '<td style="padding:7px 10px;color:#1e3a4e">—</td>'+
+        '<td style="padding:7px 10px;color:#1e3a4e">—</td>'+
+        '<td style="padding:7px 10px;color:#475569;font-size:.68rem">Sin datos de retorno</td>'
+      )+
+      '<td style="padding:7px 10px;text-align:center"><span style="background:'+f.estadoCol+'22;color:'+f.estadoCol+';font-weight:700;font-size:.7rem;border-radius:4px;padding:3px 10px">'+f.estadoLabel+'</span></td>';
+    tr.onclick=(function(p){ return function(){
+      flotaSelectedPlaca=(flotaSelectedPlaca===p)?null:p;
+      buildFlota();
+      if(flotaSelectedPlaca) buildFlotaDetalle(p);
+      else document.getElementById('flotaDetalle').style.display='none';
+    }; })(f.placa);
+    tbody.appendChild(tr);
+  });
+  if(flotaSelectedPlaca && raw[flotaSelectedPlaca]) buildFlotaDetalle(flotaSelectedPlaca);
+}
+
+function buildFlotaDetalle(placa){
+  var raw = window.FLOTA || {};
+  var trips = (raw[placa]||[]).slice().sort(function(a,b){return b.f.localeCompare(a.f);});
+  var det=document.getElementById('flotaDetalle');
+  det.style.display='block';
+  document.getElementById('flotaDetallePlaca').textContent=placa;
+
+  var refCod=document.getElementById('flotaClienteSel').value;
+  var thS='background:#060e16;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #0e1e2e;white-space:nowrap';
+  document.getElementById('theadFlotaDet').innerHTML='<tr>'+
+    '<th style="'+thS+';text-align:left">FECHA</th>'+
+    '<th style="'+thS+';text-align:left">CLIENTE</th>'+
+    '<th style="'+thS+';text-align:left">ORIGEN</th>'+
+    '<th style="'+thS+';text-align:left">DESTINO</th>'+
+    '<th style="'+thS+'">DIRECCIÓN</th>'+
+    '<th style="'+thS+';text-align:right">VENTA</th>'+
+    '<th style="'+thS+';text-align:left">MANIFIESTO</th>'+
+    '</tr>';
+
+  var tbody=document.getElementById('tbodyFlotaDet');
+  tbody.innerHTML='';
+  trips.forEach(function(t,ri){
+    var isRef=(t.cod===refCod);
+    var color=flotaColor(t.cod);
+    var dir=dirRuta(t.ori,t.des);
+    var dirLabel=dir==='BAJA'?'▼ Baja':dir==='SUBE'?'▲ Sube':'↔';
+    var dirCol=dir==='BAJA'?'#38bdf8':dir==='SUBE'?'#a78bfa':'#64748b';
+    var tr=document.createElement('tr');
+    tr.style.cssText='border-bottom:1px solid #0a1820;background:'+(isRef?color+'14':'#040a11')+
+      (isRef?';border-left:3px solid '+color:'');
+    tr.innerHTML=
+      '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.f+'</td>'+
+      '<td style="padding:5px 10px"><span style="background:'+color+'22;color:'+color+
+        ';font-weight:700;font-size:.72rem;border-radius:3px;padding:2px 7px">'+clientLabel(t.cod)+'</span></td>'+
+      '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.ori+'</td>'+
+      '<td style="padding:5px 10px;color:#94a3b8;font-size:.72rem">'+t.des+'</td>'+
+      '<td style="padding:5px 10px;text-align:center;color:'+dirCol+';font-size:.72rem;font-weight:700">'+dirLabel+'</td>'+
+      '<td style="padding:5px 10px;text-align:right;color:#e2e8f0;font-size:.72rem">'+formatCopCompact(t.v)+'</td>'+
+      '<td style="padding:5px 10px;color:#475569;font-size:.68rem">'+t.man+'</td>';
     tbody.appendChild(tr);
   });
 }
