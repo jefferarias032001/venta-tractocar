@@ -2069,6 +2069,14 @@ function buildInsights(){
    ====================================================== */
 var ajovMode = 'venta';
 var selectedAjovTipo = null;
+var ajovSortCol = null;   // null=order natural, 'tipo', 'pct', 'mesN' (index), 'dif', 'pctdif'
+var ajovSortDir = 1;      // 1=asc, -1=desc
+
+function ajovSort(col){
+  if(ajovSortCol===col){ ajovSortDir*=-1; }
+  else { ajovSortCol=col; ajovSortDir=-1; }
+  buildAjover();
+}
 
 function setAjovMode(mode, btn){
   ajovMode = mode;
@@ -2154,18 +2162,63 @@ function buildAjover(){
       '<div style="color:#4ade80;font-size:1rem;font-weight:800">'+(kpiV>0?(kpiU/kpiV*100).toFixed(1)+'%':'—')+'</div>'+
     '</div>';
 
-  // ---- HEADER (una sola columna por mes) ----
-  var thBg  = 'background:#0a1520;color:#94a3b8;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #1e3a4e;white-space:nowrap;text-align:right;';
-  var thAct = 'background:#0d1e2e;color:#f0c060;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #f97316;white-space:nowrap;text-align:right;';
-  var hRow  = '<tr>';
-  hRow += '<th style="background:#0a1520;color:#94a3b8;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #1e3a4e;text-align:left;white-space:nowrap;min-width:200px">TIPO OPERACIÓN</th>';
-  allMeses.forEach(function(mes, mi){
-    hRow += '<th style="'+(mi===mesActIdx?thAct:thBg)+'">'+mesLabel(mes)+'</th>';
+  // ---- TOTALES ANUALES para % participación ----
+  var tipoAnual = {};
+  tipos.forEach(function(t){
+    tipoAnual[t] = allMeses.reduce(function(s,mes){ return s+getVal(t,mes); }, 0);
   });
-  hRow += '<th style="'+thBg+'color:#f97316">vs Ant.</th>';
-  hRow += '<th style="'+thBg+'color:#f97316">%</th>';
+  var grandAnual = tipos.reduce(function(s,t){ return s+tipoAnual[t]; }, 0);
+
+  // ---- SORT ----
+  function sortIndicator(col){
+    if(ajovSortCol!==col) return ' <span style="color:#2a3a4a;font-size:.6rem">⇅</span>';
+    return ajovSortDir===1 ? ' <span style="color:#f97316;font-size:.65rem">▲</span>'
+                           : ' <span style="color:#f97316;font-size:.65rem">▼</span>';
+  }
+  function thClick(col){ return 'onclick="ajovSort(\''+col+'\')" style="cursor:pointer"'; }
+
+  // ---- HEADER ----
+  var thBg  = 'background:#0a1520;color:#94a3b8;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #1e3a4e;white-space:nowrap;text-align:right;cursor:pointer;user-select:none';
+  var thAct = 'background:#0d1e2e;color:#f0c060;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #f97316;white-space:nowrap;text-align:right;cursor:pointer;user-select:none';
+  var thL   = 'background:#0a1520;color:#94a3b8;font-size:.72rem;font-weight:700;padding:8px 12px;border-bottom:2px solid #1e3a4e;text-align:left;white-space:nowrap;min-width:200px;cursor:pointer;user-select:none';
+  var hRow = '<tr>';
+  hRow += '<th '+thClick('tipo')+' style="'+thL+'">TIPO OPERACIÓN'+sortIndicator('tipo')+'</th>';
+  allMeses.forEach(function(mes, mi){
+    var sty = mi===mesActIdx ? thAct : thBg;
+    var col = 'mes'+mi;
+    hRow += '<th onclick="ajovSort(\''+col+'\')" style="'+sty+'">'+mesLabel(mes)+sortIndicator(col)+'</th>';
+  });
+  hRow += '<th '+thClick('pct')+' style="'+thBg+';color:#a78bfa" title="% participación venta anual">% Part.'+sortIndicator('pct')+'</th>';
+  hRow += '<th '+thClick('dif')+' style="'+thBg+';color:#f97316">vs Ant.'+sortIndicator('dif')+'</th>';
+  hRow += '<th '+thClick('pctdif')+' style="'+thBg+';color:#f97316">%'+sortIndicator('pctdif')+'</th>';
   hRow += '</tr>';
   document.getElementById('theadAjover').innerHTML = hRow;
+
+  // ---- ORDENAR TIPOS ----
+  if(ajovSortCol){
+    tipos.sort(function(a,b){
+      var va, vb;
+      if(ajovSortCol==='tipo'){ va=a; vb=b; return ajovSortDir*va.localeCompare(vb); }
+      if(ajovSortCol==='pct'){ va=tipoAnual[a]; vb=tipoAnual[b]; }
+      else if(ajovSortCol==='dif'){
+        va = getVal(a,allMeses[mesActIdx]) - (mesActIdx>0?getVal(a,allMeses[mesActIdx-1]):0);
+        vb = getVal(b,allMeses[mesActIdx]) - (mesActIdx>0?getVal(b,allMeses[mesActIdx-1]):0);
+      }
+      else if(ajovSortCol==='pctdif'){
+        var aAnt=mesActIdx>0?getVal(a,allMeses[mesActIdx-1]):0;
+        var bAnt=mesActIdx>0?getVal(b,allMeses[mesActIdx-1]):0;
+        var aDif=getVal(a,allMeses[mesActIdx])-aAnt;
+        var bDif=getVal(b,allMeses[mesActIdx])-bAnt;
+        va = aAnt>0?(aDif/aAnt*100):(aDif>0?100:0);
+        vb = bAnt>0?(bDif/bAnt*100):(bDif>0?100:0);
+      }
+      else{ // mesN
+        var mi=parseInt(ajovSortCol.replace('mes',''));
+        va=getVal(a,allMeses[mi]); vb=getVal(b,allMeses[mi]);
+      }
+      return ajovSortDir*(va>vb?1:va<vb?-1:0);
+    });
+  }
 
   // ---- ROWS ----
   var tbody = document.getElementById('tbodyAjover');
@@ -2179,19 +2232,14 @@ function buildAjover(){
     var tr  = document.createElement('tr');
     var isSelected = (selectedAjovTipo === tipo);
     var baseBg = ri%2===0?'#070e18':'#050b14';
-    tr.style.cssText = 'border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2540':baseBg)+';cursor:pointer;';
-    if(isSelected) tr.style.outline = '1px solid #2d6a9f';
-
-    tr.onclick = (function(t){ return function(){
-      selectedAjovTipo = (selectedAjovTipo===t) ? null : t;
-      buildAjover();
-    }; })(tipo);
+    tr.style.cssText = 'border-bottom:1px solid #0e2030;background:'+(isSelected?'#0d2540':baseBg)+';cursor:pointer';
 
     var vAct  = getVal(tipo, allMeses[mesActIdx]);
     var vAnt  = mesActIdx>0 ? getVal(tipo, allMeses[mesActIdx-1]) : 0;
     var dif   = vAct - vAnt;
     var pct   = vAnt>0 ? (dif/vAnt*100) : (vAct>0?100:0);
     var dCol  = dif>=0 ? '#4ade80' : '#ef4444';
+    var partPct = grandAnual>0 ? (tipoAnual[tipo]/grandAnual*100) : 0;
 
     var html = '<td style="padding:7px 12px;font-weight:700;color:'+(isSelected?'#60d0ff':'#ffffff')+';white-space:nowrap;text-align:left">'+(isSelected?'&#9655; ':'')+tipo+'</td>';
     allMeses.forEach(function(mes, mi){
@@ -2203,10 +2251,18 @@ function buildAjover(){
       html += v>0 ? fmtVal(v) : '<span style="color:#2a3a4a">—</span>';
       html += '</td>';
     });
+    // % Part. bar
+    var barW = Math.round(partPct * 1.6);
+    html += '<td style="text-align:right;padding:7px 12px;white-space:nowrap;min-width:90px">';
+    html += '<div style="display:flex;align-items:center;justify-content:flex-end;gap:6px">';
+    html += '<div style="width:'+barW+'px;height:5px;background:#7c3aed;border-radius:2px;min-width:2px"></div>';
+    html += '<span style="color:#c4b5fd;font-weight:700;font-size:.72rem">'+partPct.toFixed(1)+'%</span>';
+    html += '</div></td>';
     html += '<td style="text-align:right;padding:7px 12px;color:'+dCol+';font-weight:700;white-space:nowrap">'+(dif>=0?'+':'')+fmtVal(dif)+'</td>';
     html += '<td style="text-align:right;padding:7px 10px;color:'+dCol+';font-weight:700;white-space:nowrap">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</td>';
     tr.innerHTML = html;
-    tr.onclick = (function(t){ return function(){
+    tr.onclick = (function(t){ return function(e){
+      if(e.target.closest('th')) return;
       selectedAjovTipo = (selectedAjovTipo===t) ? null : t;
       buildAjover();
     }; })(tipo);
@@ -2223,6 +2279,7 @@ function buildAjover(){
     var isAct=(ti===mesActIdx);
     tHtml+='<td style="text-align:right;padding:8px 12px;color:'+(isAct?'#f0c060':'#e2e8f0')+';font-weight:700">'+fmtVal(v)+'</td>';
   });
+  tHtml+='<td style="text-align:right;padding:8px 12px;color:#a78bfa;font-weight:700">100%</td>';
   tHtml+='<td style="text-align:right;padding:8px 12px;color:'+tCol+'">'+(tDif>=0?'+':'')+fmtVal(tDif)+'</td>';
   tHtml+='<td style="text-align:right;padding:8px 10px;color:'+tCol+'">'+(tPct>=0?'+':'')+tPct.toFixed(1)+'%</td>';
   tf.innerHTML=tHtml;
@@ -2263,22 +2320,45 @@ function buildAjovRutas(allMeses, mesActIdx){
   }
   function fmtVal(v){ return isVenta ? formatCopCompact(v) : NUM.format(v); }
 
+  // Sort state for rutas table
+  if(typeof window._ajovRSort==='undefined'){ window._ajovRSort={col:null,dir:-1}; }
+  var RS = window._ajovRSort;
+  function rsInd(col){ if(RS.col!==col) return ' <span style="color:#2a3a4a;font-size:.58rem">⇅</span>'; return RS.dir===1?' <span style="color:#f97316;font-size:.6rem">▲</span>':' <span style="color:#f97316;font-size:.6rem">▼</span>'; }
+
   // Header
-  var thBg  = 'background:#08131c;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #1e3a4e;white-space:nowrap;text-align:right;';
-  var thAct = 'background:#081828;color:#f0c060;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #c07020;white-space:nowrap;text-align:right;';
+  var thBg  = 'background:#08131c;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #1e3a4e;white-space:nowrap;text-align:right;cursor:pointer;user-select:none';
+  var thAct = 'background:#081828;color:#f0c060;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #c07020;white-space:nowrap;text-align:right;cursor:pointer;user-select:none';
+  var thL   = 'background:#08131c;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #1e3a4e;text-align:left;min-width:220px;cursor:pointer;user-select:none';
   var hRow  = '<tr>';
-  hRow += '<th style="background:#08131c;color:#64748b;font-size:.68rem;font-weight:700;padding:6px 10px;border-bottom:1px solid #1e3a4e;text-align:left;min-width:220px">RUTA</th>';
+  hRow += '<th onclick="window._ajovRSort={col:\'ruta\',dir:window._ajovRSort&&window._ajovRSort.col===\'ruta\'?-window._ajovRSort.dir:-1};buildAjover()" style="'+thL+'">RUTA'+rsInd('ruta')+'</th>';
   allMeses.forEach(function(mes, mi){
-    hRow += '<th style="'+(mi===mesActIdx?thAct:thBg)+'">'+mesLabel(mes)+'</th>';
+    var col='rmes'+mi;
+    hRow += '<th onclick="window._ajovRSort={col:\''+col+'\',dir:window._ajovRSort&&window._ajovRSort.col===\''+col+'\'?-window._ajovRSort.dir:-1};buildAjover()" style="'+(mi===mesActIdx?thAct:thBg)+'">'+mesLabel(mes)+rsInd(col)+'</th>';
   });
-  hRow += '<th style="'+thBg+'color:#f97316">vs Ant.</th>';
-  hRow += '<th style="'+thBg+'color:#f97316">%</th>';
+  hRow += '<th onclick="window._ajovRSort={col:\'rdif\',dir:window._ajovRSort&&window._ajovRSort.col===\'rdif\'?-window._ajovRSort.dir:-1};buildAjover()" style="'+thBg+';color:#f97316">vs Ant.'+rsInd('rdif')+'</th>';
+  hRow += '<th onclick="window._ajovRSort={col:\'rpct\',dir:window._ajovRSort&&window._ajovRSort.col===\'rpct\'?-window._ajovRSort.dir:-1};buildAjover()" style="'+thBg+';color:#f97316">%'+rsInd('rpct')+'</th>';
   hRow += '</tr>';
   thead.innerHTML = hRow;
 
-  // Sort rutas by valor mes actual desc
+  // Sort rutas
   rutas.sort(function(a,b){
-    return getRutaVal(b,allMeses[mesActIdx]) - getRutaVal(a,allMeses[mesActIdx]);
+    var col=RS.col, dir=RS.dir||(-1);
+    if(!col || col==='rmes'+(mesActIdx)){
+      return dir*(getRutaVal(b,allMeses[mesActIdx])-getRutaVal(a,allMeses[mesActIdx]));
+    }
+    if(col==='ruta'){ return dir*a.localeCompare(b); }
+    if(col==='rdif'){
+      var va=getRutaVal(a,allMeses[mesActIdx])-(mesActIdx>0?getRutaVal(a,allMeses[mesActIdx-1]):0);
+      var vb=getRutaVal(b,allMeses[mesActIdx])-(mesActIdx>0?getRutaVal(b,allMeses[mesActIdx-1]):0);
+      return dir*(va-vb);
+    }
+    if(col==='rpct'){
+      var aA=mesActIdx>0?getRutaVal(a,allMeses[mesActIdx-1]):0, aD=getRutaVal(a,allMeses[mesActIdx])-aA;
+      var bA=mesActIdx>0?getRutaVal(b,allMeses[mesActIdx-1]):0, bD=getRutaVal(b,allMeses[mesActIdx])-bA;
+      return dir*((aA>0?aD/aA:0)-(bA>0?bD/bA:0));
+    }
+    var mi=parseInt(col.replace('rmes',''));
+    return dir*(getRutaVal(a,allMeses[mi])-getRutaVal(b,allMeses[mi]));
   });
 
   tbody.innerHTML = '';
