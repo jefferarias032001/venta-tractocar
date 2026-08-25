@@ -513,6 +513,28 @@ def main():
     meses_flota = meses_flota[-8:] if len(meses_flota) > 8 else meses_flota
     u_flota = u_flota[u_flota["Mes"].isin(meses_flota)].copy()
 
+    # Clasificación de ciudades en regiones para filtro de corredor
+    _REGIONES = [
+        ('COSTA',        ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA']),
+        ('CUNDINAMARCA', ['BOGOTA','MADRID','GUACHETA','SAMACA','FACATATIVA','FUNZA','SOACHA','TOCANCIPA','MOSQUERA','ZIPAQUIRA','CHIA','CAJICA']),
+        ('VALLE',        ['CALI','YUMBO','PALMIRA','BUGA','TULUA']),
+        ('ANTIOQUIA',    ['MEDELLIN','ITAGUI','BELLO','COPACABANA','ENVIGADO','RIONEGRO','SABANETA']),
+        ('EJE CAFETERO', ['MANIZALES','ARMENIA','PEREIRA','DOSQUEBRADAS','CARTAGO']),
+        ('SANTANDER',    ['BUCARAMANGA','BARRANCABERMEJA','GIRON','FLORIDABLANCA']),
+        ('TOLIMA',       ['IBAGUE','ESPINAL','FLANDES','MELGAR']),
+        ('BOYACA',       ['TUNJA','DUITAMA','SOGAMOSO','NOBSA']),
+        ('NORTE SANT.',  ['CUCUTA','OCANA']),
+        ('NARIÑO',       ['PASTO','IPIALES','TUMACO']),
+        ('HUILA',        ['NEIVA','GARZON']),
+        ('META',         ['VILLAVICENCIO','ACACIAS']),
+    ]
+    def _region(ciudad):
+        c = str(ciudad or '').upper()
+        for reg, claves in _REGIONES:
+            if any(k in c for k in claves):
+                return reg
+        return 'OTRA'
+
     flota_dict: dict = {}
     for _, row in u_flota.iterrows():
         placa = str(row["_placa"])
@@ -522,13 +544,27 @@ def main():
         cod = str(row["Cod"])
         venta = round(float(row["AFacturar"]), 0)
         man = str(row.get("Manifiesto", ""))
+        tip = str(row.get("Tipologia", "") or "").strip()
+        if not tip or tip in ("nan", "None", "(Sin tipologia)"): tip = ""
+        corredor = f"{_region(ori)} - {_region(des)}"
         flota_dict.setdefault(placa, []).append({
             "f": fecha_iso, "cod": cod,
             "ori": ori, "des": des,
-            "v": venta, "man": man
+            "v": venta, "man": man,
+            "co": corredor, "ti": tip
         })
     for p in flota_dict:
         flota_dict[p].sort(key=lambda x: x["f"])
+
+    # Listas de corredores y tipologías únicas (solo de bajadas = destino en región COSTA)
+    flota_corredores = sorted({
+        t["co"] for trips in flota_dict.values() for t in trips
+        if _region(t["des"]) == "COSTA" and _region(t["ori"]) != "COSTA" and t["co"]
+    })
+    flota_tipologias = sorted({
+        t["ti"] for trips in flota_dict.values() for t in trips
+        if t["ti"]
+    })
 
     # Estadísticas históricas por placa (para análisis inteligente)
     _CK = ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA']
@@ -618,6 +654,8 @@ def main():
         f"window.FLOTA={json.dumps(flota_dict, ensure_ascii=False)};"
         f"window.FLOTA_STATS={json.dumps(flota_stats, ensure_ascii=False)};"
         f"window.FLOTA_CLIENTES={json.dumps(flota_clientes, ensure_ascii=False)};"
+        f"window.FLOTA_CORREDORES={json.dumps(flota_corredores, ensure_ascii=False)};"
+        f"window.FLOTA_TIPOLOGIAS={json.dumps(flota_tipologias, ensure_ascii=False)};"
         f"window.LOGO='{logo_b64}';"
         f"window.META={{mes:'{mes_actual}',diaActual:{today.day},diasMes:{dias_mes},"
         f"nombreMes:'{nombre_mes}',labelHoy:'{label_hoy}',labelAyer:'{label_ayer}',"
@@ -1036,6 +1074,20 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       <select id="flotaMesSel" onchange="buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
         <option value="">Todos los meses</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Corredor:</span>
+      <select id="flotaCorredorSel" onchange="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+        <option value="">Todos</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Tipología:</span>
+      <select id="flotaTipoSel" onchange="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+        <option value="">Todas</option>
       </select>
     </div>
     <div style="display:flex;align-items:center;gap:6px">
@@ -2607,19 +2659,40 @@ function initFlota(){
     if(c==='MILP') opt.selected=true;
     sel.appendChild(opt);
   });
+
+  // Poblar corredores
+  var cSel=document.getElementById('flotaCorredorSel');
+  cSel.innerHTML='<option value="">Todos</option>';
+  (window.FLOTA_CORREDORES||[]).forEach(function(co){
+    var opt=document.createElement('option');
+    opt.value=co; opt.textContent=co;
+    cSel.appendChild(opt);
+  });
+
+  // Poblar tipologías
+  var tSel=document.getElementById('flotaTipoSel');
+  tSel.innerHTML='<option value="">Todas</option>';
+  (window.FLOTA_TIPOLOGIAS||[]).forEach(function(ti){
+    var opt=document.createElement('option');
+    opt.value=ti; opt.textContent=ti;
+    tSel.appendChild(opt);
+  });
+
   buildFlota();
 }
 
 /* Analiza una placa y devuelve su estado de vuelta desde Costa */
-function analizarPlaca(placa, refCod, mesFil){
+function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
   var raw=window.FLOTA||{};
   var trips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
 
-  // Filtrar por cliente y mes de la bajada
+  // Filtrar bajadas por cliente, mes, corredor y tipología
   var bajaTrips=trips.filter(function(t){
     return dirRuta(t.ori,t.des)==='BAJA'
       && (!refCod || t.cod===refCod)
-      && (!mesFil || (t.f && t.f.substring(0,7)===mesFil));
+      && (!mesFil || (t.f && t.f.substring(0,7)===mesFil))
+      && (!corFil || t.co===corFil)
+      && (!tipFil || t.ti===tipFil);
   });
   if(!bajaTrips.length) return null;
 
@@ -2671,9 +2744,11 @@ function buildFlota(){
   var refCod=document.getElementById('flotaClienteSel').value;
   var estadoFil=document.getElementById('flotaEstadoSel').value;
   var mesFil=document.getElementById('flotaMesSel').value;
+  var corFil=document.getElementById('flotaCorredorSel').value;
+  var tipFil=document.getElementById('flotaTipoSel').value;
 
-  // Analizar todas las placas (filtrando bajadas por mes si aplica)
-  var todas=Object.keys(raw).map(function(p){return analizarPlaca(p,refCod,mesFil);}).filter(Boolean);
+  // Analizar todas las placas (filtrando bajadas por mes, corredor y tipología si aplica)
+  var todas=Object.keys(raw).map(function(p){return analizarPlaca(p,refCod,mesFil,corFil,tipFil);}).filter(Boolean);
 
   // Resumen global (siempre visible)
   var nBaja=todas.length;
