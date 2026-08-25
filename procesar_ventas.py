@@ -2812,23 +2812,26 @@ function buildFlotaInteligente(filas){
 
   function fmtM(v){ return v>=1000000?(v/1000000).toFixed(1)+'M':v>=1000?(v/1000).toFixed(0)+'k':String(v); }
 
-  function tarjetasHtml(lista, color, emojiBadge){
+  function tarjetasHtml(lista, color){
     if(!lista.length) return '<span style="color:#475569;font-size:.72rem">Ninguna en los filtros actuales.</span>';
     return lista.map(function(f){
       var s=f._stats||{};
       var nb=s.nb||0, nr=s.nr||0;
       var pctRet=nb>0?Math.round(nr/nb*100):0;
-      var dias=f.diasEnCosta>0?' · '+f.diasEnCosta+'d en costa':'';
       var razon='';
       if(f.estado==='FUGA') razon='Fuga confirmada';
       else if(f.estado==='PROBABLE_FUGA') razon='Sin retorno +'+f.diasEnCosta+'d';
       else if(f.estado==='RETORNO'&&pctRet<40) razon='Bajo retorno hist.';
-      else if(f.estado==='RETORNO') razon='Retorna con Tractocar';
-      return '<div style="display:flex;align-items:center;gap:10px;padding:7px 12px;background:#060e16;border-left:3px solid '+color+';border-radius:4px;margin-bottom:5px">'+
-        '<span style="color:#fff;font-weight:800;font-size:.78rem;min-width:90px">'+f.placa+'</span>'+
-        '<span style="color:'+color+';font-size:.7rem;min-width:130px">'+razon+'</span>'+
-        '<span style="color:#64748b;font-size:.68rem">'+nb+' bajadas · '+pctRet+'% retorno · $'+fmtM(s.vt||0)+'</span>'+
-        (f.clienteSig?'<span style="color:#475569;font-size:.67rem;margin-left:6px">→ fue con '+clientLabel(f.clienteSig)+'</span>':'')+
+      else razon='Retorna con Tractocar';
+      return '<div style="padding:7px 10px;background:#060e16;border-left:3px solid '+color+';border-radius:4px;margin-bottom:5px">'+
+        '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px">'+
+          '<span style="color:#fff;font-weight:800;font-size:.8rem">'+f.placa+'</span>'+
+          '<span style="color:'+color+';font-size:.68rem">'+razon+'</span>'+
+        '</div>'+
+        '<div style="color:#64748b;font-size:.67rem;margin-top:2px">'+
+          nb+' bajadas · '+pctRet+'% retorno · $'+fmtM(s.vt||0)+
+          (f.clienteSig?' · → '+clientLabel(f.clienteSig):'')+
+        '</div>'+
         '</div>';
     }).join('');
   }
@@ -2837,35 +2840,18 @@ function buildFlotaInteligente(filas){
   var totalAtencion=filas.filter(function(f){return f._score>=30&&f._score<50;}).length;
   var totalOk=filas.filter(function(f){return f._score<15;}).length;
 
+  function colHtml(titulo, color, lista){
+    return '<div style="flex:1;min-width:280px;background:#070f1a;border:1px solid #1e3a4e;border-top:3px solid '+color+';border-radius:8px;padding:12px 14px">'+
+      '<div style="color:'+color+';font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:8px">'+titulo+'</div>'+
+      tarjetasHtml(lista,color)+
+      '</div>';
+  }
+
   panel.innerHTML=
-    '<div style="background:#070f1a;border:1px solid #1e3a4e;border-radius:10px;padding:14px 18px">'+
-    // Resumen ejecutivo
-    '<div style="display:flex;gap:20px;margin-bottom:14px;flex-wrap:wrap">'+
-      '<div><span style="color:#ef4444;font-size:1.3rem;font-weight:800">'+totalCriticas+'</span><br><span style="color:#64748b;font-size:.65rem">CRÍTICAS</span></div>'+
-      '<div><span style="color:#f97316;font-size:1.3rem;font-weight:800">'+totalAtencion+'</span><br><span style="color:#64748b;font-size:.65rem">ATENCIÓN</span></div>'+
-      '<div><span style="color:#4ade80;font-size:1.3rem;font-weight:800">'+totalOk+'</span><br><span style="color:#64748b;font-size:.65rem">OK / CONFIABLES</span></div>'+
-      '<div style="margin-left:auto;color:#475569;font-size:.65rem;line-height:1.6;max-width:340px">'+
-        'Score = estado actual + historial de retorno + valor transportado.<br>'+
-        '<b style="color:#ef4444">Crítica ≥50</b> · <b style="color:#f97316">Atención ≥30</b> · <b style="color:#f59e0b">Monitorear ≥15</b> · <b style="color:#4ade80">OK &lt;15</b>'+
-      '</div>'+
-    '</div>'+
-    // Críticas
-    '<div style="margin-bottom:12px">'+
-      '<div style="color:#ef4444;font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:6px">🔴 CRÍTICAS · REQUIEREN ATENCIÓN INMEDIATA</div>'+
-      tarjetasHtml(criticas,'#ef4444','')+
-    '</div>'+
-    // Atención
-    '<div style="margin-bottom:12px">'+
-      '<div style="color:#f97316;font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:6px">🟠 ATENCIÓN · MONITOREAR DE CERCA</div>'+
-      tarjetasHtml(atencion,'#f97316','')+
-    '</div>'+
-    // Confiables
-    (confiables.length?
-      '<div>'+
-        '<div style="color:#4ade80;font-size:.7rem;font-weight:800;letter-spacing:.06em;margin-bottom:6px">🟢 MÁS CONFIABLES · BUEN HISTORIAL DE RETORNO</div>'+
-        tarjetasHtml(confiables,'#4ade80','')+
-      '</div>'
-    :'')+
+    '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'+
+      colHtml('🔴 CRÍTICAS ('+totalCriticas+') · ATENCIÓN INMEDIATA','#ef4444',criticas)+
+      colHtml('🟠 ATENCIÓN ('+totalAtencion+') · MONITOREAR DE CERCA','#f97316',atencion)+
+      colHtml('🟢 CONFIABLES · BUEN HISTORIAL DE RETORNO','#4ade80',confiables)+
     '</div>';
 }
 
