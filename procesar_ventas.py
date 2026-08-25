@@ -2805,10 +2805,31 @@ function buildFlotaInteligente(filas){
   var panel=document.getElementById('flotaAnalisis');
   if(!panel||panel.style.display==='none') return;
 
-  var criticas=filas.filter(function(f){return f._score>=50;}).sort(function(a,b){return b._score-a._score;}).slice(0,8);
-  var atencion=filas.filter(function(f){return f._score>=30&&f._score<50;}).sort(function(a,b){return b._score-a._score;}).slice(0,6);
+  // Críticas: más bajadas primero, en caso de empate el menor % retorno (los más problemáticos arriba)
+  var criticas=filas.filter(function(f){return f._score>=50;}).sort(function(a,b){
+    var nbD=(b._stats.nb||0)-(a._stats.nb||0);
+    if(nbD!==0) return nbD;
+    var pA=(a._stats.nb>0?a._stats.nr/a._stats.nb:0);
+    var pB=(b._stats.nb>0?b._stats.nr/b._stats.nb:0);
+    return pA-pB; // menor retorno arriba
+  }).slice(0,8);
+  // Atención: igual que críticas
+  var atencion=filas.filter(function(f){return f._score>=30&&f._score<50;}).sort(function(a,b){
+    var nbD=(b._stats.nb||0)-(a._stats.nb||0);
+    if(nbD!==0) return nbD;
+    var pA=(a._stats.nb>0?a._stats.nr/a._stats.nb:0);
+    var pB=(b._stats.nb>0?b._stats.nr/b._stats.nb:0);
+    return pA-pB;
+  }).slice(0,6);
+  // Confiables: más bajadas primero, en empate mayor % retorno (los más fieles arriba)
   var confiables=filas.filter(function(f){return f.estado==='RETORNO'&&(f._stats.nb||0)>=3;})
-    .sort(function(a,b){return (b._stats.nr||0)-(a._stats.nr||0)||(b._stats.vt||0)-(a._stats.vt||0);}).slice(0,5);
+    .sort(function(a,b){
+      var nbD=(b._stats.nb||0)-(a._stats.nb||0);
+      if(nbD!==0) return nbD;
+      var pA=(a._stats.nb>0?a._stats.nr/a._stats.nb:0);
+      var pB=(b._stats.nb>0?b._stats.nr/b._stats.nb:0);
+      return pB-pA; // mayor retorno arriba
+    }).slice(0,5);
 
   function fmtM(v){ return v>=1000000?(v/1000000).toFixed(1)+'M':v>=1000?(v/1000).toFixed(0)+'k':String(v); }
 
