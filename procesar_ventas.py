@@ -2797,6 +2797,7 @@ function prioTag(sc){
 function toggleFlotaAnalisis(){
   var d=document.getElementById('flotaAnalisis');
   d.style.display=d.style.display==='none'?'':'none';
+  if(d.style.display!=='none') buildFlota();
 }
 
 /* Construye el panel de análisis inteligente */
