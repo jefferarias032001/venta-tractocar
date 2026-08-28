@@ -187,15 +187,12 @@ def main():
         "AJOV": GRUPO_AJOV,
         "NOCO": GRUPO_AJOV,
         "CASC": GRUPO_AJOV,
-        "MECO": "MERE",           # sub-código Mexichem → MERE
-        "ESEN_CR_ESPE": "ESEN",   # sub-código Esenttia → ESEN
-        "ESEN_MB": "ESEN",        # sub-código Esenttia → ESEN
     }
     # Clientes que se convierten en operación propia (se sacan de NACIONAL)
     CLIENTES_OPERACION = {"JEMA"}
     # Clientes que siempre van a OTROS CLIENTES
     SIEMPRE_OTROS = {"CPA", "GDANE", "SOCO", "YUPI",
-                     "CRESC", "LHCO", "MOIN"}
+                     "ESEN_CR_ESPE", "CRESC", "LHCO", "MOIN", "ESEN_MB", "MECO"}
     # Guardar código original ANTES del alias (lo usa la tab AJOVER)
     u_nac["_CodOrig"] = u_nac["Cod"].copy()
     u_nac["Cod"] = u_nac["Cod"].replace(COD_ALIAS)
