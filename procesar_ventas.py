@@ -3048,6 +3048,10 @@ function buildFlota(){
     kpiBox('EN DESTINO 3-5 DÍAS',nPend,'en espera nuevo viaje','#f59e0b')+
     kpiBox('RUTA INTERIOR',nInterior,'siguiente viaje interior','#64748b');
 
+  // Guardar 'todas' para que el panel use los mismos datos (1 placa = 1 entrada)
+  window._flotaResultados=todas;
+  window._flotaFiltros={mesFil:mesFil,corFil:corFil,tipFil:tipFil,refCod:refCod};
+
   // Resumen por cliente del viaje de BAJADA
   buildResumenClientes(todas);
   // Panel retorno por cliente: reconstruir si está visible
@@ -3191,37 +3195,38 @@ function togglePanelClientes(){
 }
 
 function buildPanelClientesRetorno(){
-  var raw=window.FLOTA||{};
   var mesFil=document.getElementById('flotaMesSel').value;
   var corFil=document.getElementById('flotaCorredorSel').value;
   var tipFil=document.getElementById('flotaTipoSel').value;
   var refCod=document.getElementById('flotaClienteSel').value;
+  var modoCliente=!!refCod;
 
-  // grupos[key] = {nb, nr, nf, label, isCliente}
-  // Cuando hay cliente seleccionado → agrupa por corredor
-  // Cuando no hay cliente → agrupa por cliente
+  var div=document.getElementById('flotaPanelClientes');
+  if(!div) return;
+
+  // ── Fuente de datos ──────────────────────────────────────────────────
+  // Con cliente seleccionado: usar _flotaResultados (mismas 30 placas que los KPIs)
+  // Sin cliente: recalcular sin filtro de cliente para ver todos los clientes
+  var resultados;
+  if(modoCliente){
+    resultados=window._flotaResultados||[];
+  } else {
+    var raw=window.FLOTA||{};
+    resultados=Object.keys(raw).map(function(p){
+      return analizarPlaca(p,null,mesFil,corFil,tipFil);
+    }).filter(Boolean);
+  }
+
+  // Agrupar: con cliente → por corredor; sin cliente → por cliente bajada
   var grupos={};
-  var modoCliente=!!refCod; // true = desglose por corredor del cliente
-
-  Object.keys(raw).forEach(function(placa){
-    var allTrips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
-    for(var i=0;i<allTrips.length;i++){
-      var t=allTrips[i];
-      if(dirRuta(t.ori,t.des)!=='BAJA') continue;
-      if(mesFil && (!t.f||t.f.substring(0,7)!==mesFil)) continue;
-      if(corFil && t.co!==corFil) continue;
-      if(tipFil && t.ti!==tipFil) continue;
-      if(modoCliente && t.cod!==refCod) continue; // solo el cliente seleccionado
-      var key=modoCliente?(t.co||'SIN CORREDOR'):t.cod;
-      if(!grupos[key]) grupos[key]={nb:0,nr:0,nf:0};
-      grupos[key].nb++;
-      var next=null;
-      for(var j=i+1;j<allTrips.length;j++){if(allTrips[j].f>t.f){next=allTrips[j];break;}}
-      if(next){
-        if(esCosta(next.ori)) grupos[key].nr++;
-        else                  grupos[key].nf++;
-      }
-    }
+  resultados.forEach(function(f){
+    var key=modoCliente?(f.lastBaja.co||'SIN CORREDOR'):f.clienteBaja;
+    if(!grupos[key]) grupos[key]={nb:0,nr:0,nf:0,pend:0,enruta:0};
+    grupos[key].nb++;
+    if(f.estado==='RETORNO')        grupos[key].nr++;
+    else if(f.estado==='FUGA')      grupos[key].nf++;
+    else if(f.estado==='PENDIENTE') grupos[key].pend++;
+    else if(f.estado==='EN_RUTA')   grupos[key].enruta++;
   });
 
   var keys=Object.keys(grupos).filter(function(k){return grupos[k].nb>=1;});
@@ -3231,8 +3236,6 @@ function buildPanelClientesRetorno(){
     return pA-pB;
   });
 
-  var div=document.getElementById('flotaPanelClientes');
-  if(!div) return;
   if(!keys.length){div.innerHTML='<p style="color:#475569;font-size:.75rem">Sin datos con los filtros activos.</p>';return;}
 
   var periodoNota=(mesFil?mesFil:'Todos los meses')+(corFil?' · '+corFil:'')+(tipFil?' · '+tipFil:'');
@@ -3242,29 +3245,29 @@ function buildPanelClientesRetorno(){
   var html='<div style="color:#475569;font-size:.62rem;margin-bottom:6px">'+
     'Período: <strong style="color:#60a5fa">'+periodoNota+'</strong>'+
     (modoCliente?' · Cliente: <strong style="color:'+flotaColor(refCod)+'">'+clientLabel(refCod)+'</strong>':'')+
-    ' &nbsp;·&nbsp; # bajadas al destino costa · retornaron = siguiente viaje salió desde costa</div>';
+    ' &nbsp;·&nbsp; 1 fila = 1 placa (igual que los KPIs)</div>';
   html+='<div style="overflow-x:auto;max-height:420px;overflow-y:auto">';
   html+='<table style="border-collapse:collapse;background:#060e18;border-radius:8px;border:1px solid #0e2030;font-size:.7rem;width:100%">';
   html+='<thead style="position:sticky;top:0;z-index:2"><tr>';
   html+='<th style="'+thS+';text-align:left;min-width:160px">'+tituloCol+'</th>';
-  html+='<th style="'+thS+'"># BAJADAS</th>';
-  html+='<th style="'+thS+';color:#4ade80"># RETORNARON</th>';
+  html+='<th style="'+thS+'"># PLACAS</th>';
+  html+='<th style="'+thS+';color:#4ade80"># RETORNO</th>';
   html+='<th style="'+thS+';color:#4ade80">% RETORNO</th>';
-  html+='<th style="'+thS+';color:#ef4444"># FUGA CONF.</th>';
+  html+='<th style="'+thS+';color:#ef4444"># FUGA</th>';
   html+='<th style="'+thS+';color:#ef4444">% FUGA</th>';
-  html+='<th style="'+thS+';color:#f59e0b">SIN DATO AÚN</th>';
+  html+='<th style="'+thS+';color:#22d3ee">EN RUTA</th>';
+  html+='<th style="'+thS+';color:#f59e0b">EN DESTINO</th>';
   html+='</tr></thead><tbody>';
 
   keys.forEach(function(key,ri){
     var g=grupos[key];
-    var sinDato=g.nb-g.nr-g.nf;
     var pctR=g.nb>0?Math.round(g.nr/g.nb*100):0;
     var pctF=g.nb>0?Math.round(g.nf/g.nb*100):0;
     var retCol=pctR>=70?'#4ade80':pctR>=40?'#f59e0b':'#ef4444';
     var fugCol=pctF===0?'#4ade80':pctF<=30?'#f59e0b':'#ef4444';
     var bg=ri%2===0?'#07111c':'#050d16';
     var labelHtml=modoCliente
-      ?'<span style="color:#94a3b8;font-size:.7rem">'+key+'</span>'
+      ?'<span style="color:#94a3b8">'+key+'</span>'
       :(function(){var c=flotaColor(key);return '<span style="background:'+c+'22;color:'+c+';font-weight:700;font-size:.7rem;border-radius:4px;padding:2px 8px">'+clientLabel(key)+'</span>';}());
     html+='<tr style="background:'+bg+';border-bottom:1px solid #0a1a26">';
     html+='<td style="padding:5px 10px">'+labelHtml+'</td>';
@@ -3273,7 +3276,8 @@ function buildPanelClientesRetorno(){
     html+='<td style="padding:5px 10px;text-align:center;color:'+retCol+';font-weight:800;font-size:.85rem">'+pctR+'%</td>';
     html+='<td style="padding:5px 10px;text-align:center;color:#ef4444;font-weight:700">'+g.nf+'</td>';
     html+='<td style="padding:5px 10px;text-align:center;color:'+fugCol+';font-weight:800;font-size:.85rem">'+pctF+'%</td>';
-    html+='<td style="padding:5px 10px;text-align:center;color:#f59e0b;font-size:.75rem">'+sinDato+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;color:#22d3ee">'+g.enruta+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;color:#f59e0b">'+g.pend+'</td>';
     html+='</tr>';
   });
   html+='</tbody></table></div>';
