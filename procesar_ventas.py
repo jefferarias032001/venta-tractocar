@@ -2600,6 +2600,13 @@ function buildAjovRutas(allMeses, mesActIdx){
    - PENDIENTE = sin viaje posterior en datos (placa aún en costa)
    ====================================================== */
 var flotaSelectedPlaca = null;
+var flotaSortCol = 'fechaBaja';
+var flotaSortDir = -1;
+function flotaSort(col){
+  if(flotaSortCol===col){ flotaSortDir*=-1; }
+  else { flotaSortCol=col; flotaSortDir=-1; }
+  buildFlota();
+}
 
 var FLOTA_COLORS = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ec4899',
                     '#06b6d4','#84cc16','#f97316','#e11d48','#0ea5e9'];
@@ -2782,9 +2789,23 @@ function buildFlota(){
     return !estadoFil || f.estado===estadoFil;
   });
 
-  var ORD={FUGA:0,PROBABLE_FUGA:1,PENDIENTE:2,RETORNO:3};
+  // Sort dinámico por columna
+  var ORD_EST={FUGA:0,PROBABLE_FUGA:1,PENDIENTE:2,RETORNO:3};
   filas.sort(function(a,b){
-    return (ORD[a.estado]||0)-(ORD[b.estado]||0)||b.lastBaja.f.localeCompare(a.lastBaja.f);
+    var d=flotaSortDir, v=0;
+    var sA=a._stats||{}, sB=b._stats||{};
+    if(flotaSortCol==='prio')      v=b._score-a._score;
+    else if(flotaSortCol==='placa') v=a.placa.localeCompare(b.placa);
+    else if(flotaSortCol==='ruta')  v=(a.lastBaja.ori+a.lastBaja.des).localeCompare(b.lastBaja.ori+b.lastBaja.des);
+    else if(flotaSortCol==='clienteBaja') v=(a.clienteBaja||'').localeCompare(b.clienteBaja||'');
+    else if(flotaSortCol==='fechaBaja')   v=a.lastBaja.f.localeCompare(b.lastBaja.f);
+    else if(flotaSortCol==='rutaSig')     v=((a.sigViaje?a.sigViaje.ori+a.sigViaje.des:'')).localeCompare((b.sigViaje?b.sigViaje.ori+b.sigViaje.des:''));
+    else if(flotaSortCol==='clienteSig')  v=(a.clienteSig||'').localeCompare(b.clienteSig||'');
+    else if(flotaSortCol==='fechaSig')    v=((a.sigViaje?a.sigViaje.f:'')).localeCompare((b.sigViaje?b.sigViaje.f:''));
+    else if(flotaSortCol==='estado')      v=(ORD_EST[a.estado]||0)-(ORD_EST[b.estado]||0);
+    else if(flotaSortCol==='bajadas')     v=(sA.nb||0)-(sB.nb||0);
+    else if(flotaSortCol==='pctRet')     v=((sA.nb>0?sA.nr/sA.nb:0))-((sB.nb>0?sB.nr/sB.nb:0));
+    return v!==0 ? v*d : b.lastBaja.f.localeCompare(a.lastBaja.f);
   });
 
   // Calcular scores y enriquecer filas
@@ -2806,23 +2827,30 @@ function buildFlota(){
   // Actualizar panel análisis inteligente (si está abierto)
   buildFlotaInteligente(filas);
 
-  var thS='background:#0a1520;color:#94a3b8;font-size:.7rem;font-weight:700;padding:8px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap';
+  var thB='background:#0a1520;color:#94a3b8;font-size:.7rem;font-weight:700;padding:8px 10px;border-bottom:2px solid #1e3a4e;white-space:nowrap;cursor:pointer;user-select:none';
+  function thSort(col,lbl,align){
+    var arr=flotaSortCol===col?(flotaSortDir>0?'↑':'↓'):'↕';
+    var ac=flotaSortCol===col?'color:#60a5fa':'';
+    return '<th style="'+thB+';text-align:'+(align||'center')+';'+ac+'" onclick="flotaSort(\''+col+'\')">'+lbl+' <span style="opacity:.6">'+arr+'</span></th>';
+  }
   document.getElementById('theadFlota').innerHTML='<tr>'+
-    '<th style="'+thS+';text-align:center">PRIO.</th>'+
-    '<th style="'+thS+';text-align:left">PLACA</th>'+
-    '<th style="'+thS+';text-align:left">ÚLTIMO VIAJE BAJADA</th>'+
-    '<th style="'+thS+';text-align:center">CLIENTE BAJADA</th>'+
-    '<th style="'+thS+';text-align:center">FECHA BAJADA</th>'+
-    '<th style="'+thS+';text-align:left">SIGUIENTE VIAJE EN DATOS</th>'+
-    '<th style="'+thS+';text-align:center">CLIENTE SIG.</th>'+
-    '<th style="'+thS+';text-align:center">FECHA SIG.</th>'+
-    '<th style="'+thS+';text-align:center">ESTADO</th>'+
+    thSort('prio','PRIO.','center')+
+    thSort('placa','PLACA','left')+
+    thSort('bajadas','# BAJ.','center')+
+    thSort('pctRet','% RET.','center')+
+    thSort('ruta','ÚLTIMO VIAJE BAJADA','left')+
+    thSort('clienteBaja','CLIENTE BAJADA','center')+
+    thSort('fechaBaja','FECHA BAJADA','center')+
+    thSort('rutaSig','SIGUIENTE VIAJE EN DATOS','left')+
+    thSort('clienteSig','CLIENTE SIG.','center')+
+    thSort('fechaSig','FECHA SIG.','center')+
+    thSort('estado','ESTADO','center')+
     '</tr>';
 
   var tbody=document.getElementById('tbodyFlota');
   tbody.innerHTML='';
   if(!filas.length){
-    tbody.innerHTML='<tr><td colspan="9" style="padding:24px;text-align:center;color:#475569">Sin resultados con los filtros seleccionados.</td></tr>';
+    tbody.innerHTML='<tr><td colspan="11" style="padding:24px;text-align:center;color:#475569">Sin resultados con los filtros seleccionados.</td></tr>';
     return;
   }
 
@@ -2833,9 +2861,14 @@ function buildFlota(){
     var cBColor=flotaColor(f.clienteBaja);
     var cSColor=f.clienteSig?flotaColor(f.clienteSig):'#475569';
     var prioHtml=prioTag(f._score);
+    var sF=f._stats||{}, nbF=sF.nb||0, nrF=sF.nr||0;
+    var pctRetF=nbF>0?Math.round(nrF/nbF*100):0;
+    var pctCol=pctRetF>=70?'#4ade80':pctRetF>=40?'#f59e0b':'#ef4444';
     tr.innerHTML=
       '<td style="padding:7px 10px;text-align:center">'+prioHtml+'</td>'+
       '<td style="padding:7px 10px;font-weight:700;color:#ffffff">'+f.placa+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;color:#94a3b8;font-weight:700">'+nbF+'</td>'+
+      '<td style="padding:7px 10px;text-align:center;color:'+pctCol+';font-weight:700">'+pctRetF+'%</td>'+
       '<td style="padding:7px 10px;color:#94a3b8;font-size:.7rem">'+f.lastBaja.ori+' → '+f.lastBaja.des+'</td>'+
       '<td style="padding:7px 10px;text-align:center"><span style="background:'+cBColor+'22;color:'+cBColor+';font-weight:700;font-size:.7rem;border-radius:4px;padding:2px 8px">'+clientLabel(f.clienteBaja)+'</span></td>'+
       '<td style="padding:7px 10px;color:#cbd5e1;text-align:center;font-size:.72rem">'+f.lastBaja.f+'</td>'+
