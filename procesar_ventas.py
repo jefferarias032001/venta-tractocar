@@ -1188,7 +1188,7 @@ body.light #diasLabel{color:#3a5a72!important}
     <span style="color:#60a5fa;font-size:.85rem;font-weight:700;letter-spacing:.05em">CONTROL DE FLOTA</span>
     <div style="display:flex;align-items:center;gap:6px">
       <span style="color:#475569;font-size:.72rem">Cliente referencia:</span>
-      <select id="flotaClienteSel" onchange="buildFlota()"
+      <select id="flotaClienteSel" onchange="rebuildCorredoresYTips(this.value);buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
       </select>
     </div>
@@ -2846,25 +2846,44 @@ function initFlota(){
     sel.appendChild(opt);
   });
 
-  // Poblar corredores
+  rebuildCorredoresYTips(sel.value);
+  buildFlota();
+}
+
+function rebuildCorredoresYTips(refCod){
+  var raw=window.FLOTA||{};
+  var cors={}, tips={};
+  Object.values(raw).forEach(function(trips){
+    trips.forEach(function(t){
+      if(!refCod || t.cod===refCod){
+        if(t.co && t.co!=='OTRA - OTRA') cors[t.co]=1;
+        if(t.ti) tips[t.ti]=1;
+      }
+    });
+  });
+
   var cSel=document.getElementById('flotaCorredorSel');
+  var prevCor=cSel.value;
   cSel.innerHTML='<option value="">Todos</option>';
-  (window.FLOTA_CORREDORES||[]).forEach(function(co){
+  Object.keys(cors).sort().forEach(function(co){
     var opt=document.createElement('option');
     opt.value=co; opt.textContent=co;
+    if(co===prevCor) opt.selected=true;
     cSel.appendChild(opt);
   });
+  // Si el corredor previo ya no existe para este cliente, limpiar
+  if(prevCor && !cors[prevCor]) cSel.value='';
 
-  // Poblar tipologías
   var tSel=document.getElementById('flotaTipoSel');
+  var prevTip=tSel.value;
   tSel.innerHTML='<option value="">Todas</option>';
-  (window.FLOTA_TIPOLOGIAS||[]).forEach(function(ti){
+  Object.keys(tips).sort().forEach(function(ti){
     var opt=document.createElement('option');
     opt.value=ti; opt.textContent=ti;
+    if(ti===prevTip) opt.selected=true;
     tSel.appendChild(opt);
   });
-
-  buildFlota();
+  if(prevTip && !tips[prevTip]) tSel.value='';
 }
 
 /* Analiza una placa y devuelve su estado de movimiento */
