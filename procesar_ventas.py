@@ -2895,16 +2895,40 @@ function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
     // Placa activa con este cliente pero sin rutas costeras → mostrar como ruta interior
     var lastT=clienteTrips[clienteTrips.length-1];
     var dir=dirRuta(lastT.ori,lastT.des);
+    // Buscar el siguiente viaje REAL de esta placa (cualquier cliente) después del último viaje
+    var sigV=null;
+    for(var i=0;i<trips.length;i++){
+      if(trips[i].f>lastT.f){sigV=trips[i];break;}
+    }
     var est,estL,estC;
-    if(dir==='SUBE'||dir==='SALE_COSTA'){
-      est='RETORNO'; estL='↑ Sube al interior'; estC='#4ade80';
+    if(sigV){
+      var sigDir=dirRuta(sigV.ori,sigV.des);
+      if(sigDir==='BAJA'){
+        est='RETORNO'; estL='✓ Volvió a costa (Tractocar)'; estC='#4ade80';
+      } else if(sigDir==='SUBE'||sigDir==='SALE_COSTA'){
+        est='RETORNO'; estL='↑ Sube al interior'; estC='#4ade80';
+      } else {
+        est='INTERIOR'; estL='↔ Ruta interior'; estC='#64748b';
+      }
     } else {
-      est='INTERIOR'; estL='↔ Ruta interior'; estC='#64748b';
+      // Sin viaje posterior: posible fuga en el retorno
+      var hoy2=new Date(); hoy2.setHours(0,0,0,0);
+      var fU=new Date(lastT.f+'T00:00:00');
+      var dias2=Math.max(0,Math.floor((hoy2-fU)/86400000));
+      if(dir==='SUBE'||dir==='SALE_COSTA'){
+        if(dias2>5){
+          est='PROBABLE_FUGA'; estL='⚠️ Sin retorno a costa ('+dias2+'d)'; estC='#f97316';
+        } else {
+          est='PENDIENTE'; estL='⏳ En interior ('+dias2+'d)'; estC='#f59e0b';
+        }
+      } else {
+        est='INTERIOR'; estL='↔ Ruta interior'; estC='#64748b';
+      }
     }
     return {
-      placa:placa, lastBaja:lastT, sigViaje:null,
+      placa:placa, lastBaja:lastT, sigViaje:sigV,
       estado:est, estadoLabel:estL, estadoCol:estC,
-      clienteBaja:lastT.cod, clienteSig:null, diasEnCosta:0,
+      clienteBaja:lastT.cod, clienteSig:sigV?sigV.cod:null, diasEnCosta:0,
     };
   }
 
