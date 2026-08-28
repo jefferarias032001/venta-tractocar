@@ -3050,6 +3050,9 @@ function buildFlota(){
 
   // Resumen por cliente del viaje de BAJADA
   buildResumenClientes(todas);
+  // Panel retorno por cliente: reconstruir si está visible
+  var _ppc=document.getElementById('flotaPanelClientes');
+  if(_ppc && _ppc.style.display!=='none') buildPanelClientesRetorno();
 
   // Filtrar para la tabla detalle
   var filas=todas.filter(function(f){
@@ -3189,21 +3192,30 @@ function togglePanelClientes(){
 
 function buildPanelClientesRetorno(){
   var raw=window.FLOTA||{};
+  // Respetar filtros activos
+  var mesFil=document.getElementById('flotaMesSel').value;
+  var corFil=document.getElementById('flotaCorredorSel').value;
+  var tipFil=document.getElementById('flotaTipoSel').value;
+
   var clientes={};
   Object.keys(raw).forEach(function(placa){
-    var trips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
-    for(var i=0;i<trips.length;i++){
-      var t=trips[i];
+    var allTrips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
+    for(var i=0;i<allTrips.length;i++){
+      var t=allTrips[i];
+      // Solo bajadas que cumplen los filtros activos
       if(dirRuta(t.ori,t.des)!=='BAJA') continue;
+      if(mesFil && (!t.f||t.f.substring(0,7)!==mesFil)) continue;
+      if(corFil && t.co!==corFil) continue;
+      if(tipFil && t.ti!==tipFil) continue;
       var cod=t.cod;
       if(!clientes[cod]) clientes[cod]={nb:0,nr:0,cors:{}};
       clientes[cod].nb++;
       var cor=t.co||'?';
       if(!clientes[cod].cors[cor]) clientes[cod].cors[cor]={nb:0,nr:0};
       clientes[cod].cors[cor].nb++;
-      // Siguiente viaje de esta placa: ¿retornó desde costa?
+      // Siguiente viaje en TODO el histórico (puede ser mes distinto)
       var next=null;
-      for(var j=i+1;j<trips.length;j++){if(trips[j].f>t.f){next=trips[j];break;}}
+      for(var j=i+1;j<allTrips.length;j++){if(allTrips[j].f>t.f){next=allTrips[j];break;}}
       if(next && esCosta(next.ori)){
         clientes[cod].nr++;
         clientes[cod].cors[cor].nr++;
@@ -3211,7 +3223,7 @@ function buildPanelClientesRetorno(){
     }
   });
 
-  var cods=Object.keys(clientes).filter(function(c){return clientes[c].nb>=2;});
+  var cods=Object.keys(clientes).filter(function(c){return clientes[c].nb>=1;});
   cods.sort(function(a,b){
     var pA=clientes[a].nb>0?clientes[a].nr/clientes[a].nb:1;
     var pB=clientes[b].nb>0?clientes[b].nr/clientes[b].nb:1;
