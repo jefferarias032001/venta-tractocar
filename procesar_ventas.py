@@ -1245,6 +1245,11 @@ body.light #diasLabel{color:#3a5a72!important}
         <option value="INTERIOR">Ruta interior</option>
       </select>
     </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:#475569;font-size:.72rem">Placa:</span>
+      <input type="text" id="flotaPlacaFil" placeholder="Buscar placa…" oninput="buildFlota()"
+        style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;width:110px;text-transform:uppercase">
+    </div>
     <div id="flotaKpi" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
   </div>
 
@@ -3009,6 +3014,7 @@ function buildFlota(){
   var mesFil=document.getElementById('flotaMesSel').value;
   var corFil=document.getElementById('flotaCorredorSel').value;
   var tipFil=document.getElementById('flotaTipoSel').value;
+  var placaFil=(document.getElementById('flotaPlacaFil').value||'').toUpperCase().trim();
 
   // Analizar todas las placas (filtrando bajadas por mes, corredor y tipología si aplica)
   var todas=Object.keys(raw).map(function(p){return analizarPlaca(p,refCod,mesFil,corFil,tipFil);}).filter(Boolean);
@@ -3041,7 +3047,8 @@ function buildFlota(){
 
   // Filtrar para la tabla detalle
   var filas=todas.filter(function(f){
-    return !estadoFil || f.estado===estadoFil;
+    return (!estadoFil || f.estado===estadoFil)
+      && (!placaFil || f.placa.toUpperCase().indexOf(placaFil)>=0);
   });
 
   // Calcular scores ANTES de ordenar (para que el sort por prio/bajadas/% ret funcione)
@@ -3062,7 +3069,7 @@ function buildFlota(){
     } else if(nb>0 && nr===0){
       sc+=15;
     }
-    if((s.vt||0)>vtMedian) sc+=10;
+    if(sc>0 && (s.vt||0)>vtMedian) sc+=10;
     f._score=sc; f._stats=s;
   });
 
