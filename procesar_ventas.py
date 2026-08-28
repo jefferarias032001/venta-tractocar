@@ -371,7 +371,9 @@ def main():
 
     # Clasificación de ciudades en regiones (usada en Pérdidas y en FLOTA)
     _REGIONES = [
-        ('COSTA',        ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA']),
+        ('COSTA',        ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA',
+                          'MALAMBO','GALAPA','SOLEDAD','SABANALARGA','ALGARROBO','FUNDACION','CIENAGA','LORICA','PLANETA RICA',
+                          'MAGANGUE','MOMPOX','TURBO','APARTADO','NECOCLI','COVENAS','TOLU','SAMPUES']),
         ('CUNDINAMARCA', ['BOGOTA','MADRID','GUACHETA','SAMACA','FACATATIVA','FUNZA','SOACHA','TOCANCIPA','MOSQUERA','ZIPAQUIRA','CHIA','CAJICA']),
         ('VALLE',        ['CALI','YUMBO','PALMIRA','BUGA','TULUA']),
         ('ANTIOQUIA',    ['MEDELLIN','ITAGUI','BELLO','COPACABANA','ENVIGADO','RIONEGRO','SABANETA']),
@@ -2802,7 +2804,10 @@ function flotaColor(cod){
    BAJA = destino es costa (sin importar el origen: puede ser Guacheta, Samaca, etc.)
    SUBE = origen es costa (el retorno, que es lo que nos indica si volvio con Tractocar) */
 var COSTA_KEYS = ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA',
-                  'VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA'];
+                  'VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA',
+                  'MALAMBO','GALAPA','SOLEDAD','SABANALARGA','ALGARROBO','FUNDACION','CIENAGA',
+                  'LORICA','PLANETA RICA','MAGANGUE','MOMPOX','TURBO','APARTADO','NECOCLI',
+                  'COVENAS','TOLU','SAMPUES'];
 
 function esCosta(ciudad){
   var c=(ciudad||'').toUpperCase();
