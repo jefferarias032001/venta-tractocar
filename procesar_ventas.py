@@ -3192,34 +3192,38 @@ function togglePanelClientes(){
 
 function buildPanelClientesRetorno(){
   var raw=window.FLOTA||{};
-  // Respetar filtros activos
   var mesFil=document.getElementById('flotaMesSel').value;
   var corFil=document.getElementById('flotaCorredorSel').value;
   var tipFil=document.getElementById('flotaTipoSel').value;
 
+  // clientes[cod] = {nb, nr, nf, cors:{cor:{nb,nr,nf}}}
+  // nb = bajadas, nr = retornos (siguiente desde costa), nf = fugas (siguiente no desde costa)
   var clientes={};
   Object.keys(raw).forEach(function(placa){
     var allTrips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
     for(var i=0;i<allTrips.length;i++){
       var t=allTrips[i];
-      // Solo bajadas que cumplen los filtros activos
       if(dirRuta(t.ori,t.des)!=='BAJA') continue;
       if(mesFil && (!t.f||t.f.substring(0,7)!==mesFil)) continue;
       if(corFil && t.co!==corFil) continue;
       if(tipFil && t.ti!==tipFil) continue;
       var cod=t.cod;
-      if(!clientes[cod]) clientes[cod]={nb:0,nr:0,cors:{}};
+      if(!clientes[cod]) clientes[cod]={nb:0,nr:0,nf:0,cors:{}};
       clientes[cod].nb++;
       var cor=t.co||'?';
-      if(!clientes[cod].cors[cor]) clientes[cod].cors[cor]={nb:0,nr:0};
+      if(!clientes[cod].cors[cor]) clientes[cod].cors[cor]={nb:0,nr:0,nf:0};
       clientes[cod].cors[cor].nb++;
-      // Siguiente viaje en TODO el histórico (puede ser mes distinto)
+      // Buscar siguiente viaje en TODO el histórico
       var next=null;
       for(var j=i+1;j<allTrips.length;j++){if(allTrips[j].f>t.f){next=allTrips[j];break;}}
-      if(next && esCosta(next.ori)){
-        clientes[cod].nr++;
-        clientes[cod].cors[cor].nr++;
+      if(next){
+        if(esCosta(next.ori)){
+          clientes[cod].nr++; clientes[cod].cors[cor].nr++;
+        } else {
+          clientes[cod].nf++; clientes[cod].cors[cor].nf++;
+        }
       }
+      // sin next = en ruta o pendiente (no suma a nr ni nf)
     }
   });
 
@@ -3227,45 +3231,58 @@ function buildPanelClientesRetorno(){
   cods.sort(function(a,b){
     var pA=clientes[a].nb>0?clientes[a].nr/clientes[a].nb:1;
     var pB=clientes[b].nb>0?clientes[b].nr/clientes[b].nb:1;
-    return pA-pB; // peor primero
+    return pA-pB;
   });
 
   var div=document.getElementById('flotaPanelClientes');
   if(!div) return;
-  if(!cods.length){div.innerHTML='<p style="color:#475569;font-size:.75rem">Sin datos</p>';return;}
+  if(!cods.length){div.innerHTML='<p style="color:#475569;font-size:.75rem">Sin datos con los filtros activos.</p>';return;}
+
+  // Nota de período activo
+  var periodoNota=(mesFil?mesFil:'Todos los meses')+(corFil?' · '+corFil:'')+(tipFil?' · '+tipFil:'');
 
   var thS='padding:6px 10px;font-size:.63rem;font-weight:700;color:#475569;border-bottom:1px solid #1e3a4e;white-space:nowrap;text-align:center;background:#060e18';
-  var html='<div style="overflow-x:auto;max-height:400px;overflow-y:auto">';
+  var html='<div style="color:#334155;font-size:.63rem;margin-bottom:6px">Período: <strong style="color:#60a5fa">'+periodoNota+'</strong> · % retorno = viajes cuyo siguiente fue desde costa · % fuga = siguiente viaje fue desde interior</div>';
+  html+='<div style="overflow-x:auto;max-height:420px;overflow-y:auto">';
   html+='<table style="border-collapse:collapse;background:#060e18;border-radius:8px;border:1px solid #0e2030;font-size:.7rem;width:100%">';
   html+='<thead style="position:sticky;top:0;z-index:2"><tr>';
   html+='<th style="'+thS+';text-align:left">CLIENTE</th>';
-  html+='<th style="'+thS+'"># BAJ.</th>';
-  html+='<th style="'+thS+'"># RET.</th>';
-  html+='<th style="'+thS+'">% RETORNO</th>';
-  html+='<th style="'+thS+';text-align:left">PRINCIPALES RUTAS (bajadas / % ret.)</th>';
+  html+='<th style="'+thS+'"># VIAJES</th>';
+  html+='<th style="'+thS+';color:#4ade80"># RETORNARON</th>';
+  html+='<th style="'+thS+';color:#4ade80">% RETORNO</th>';
+  html+='<th style="'+thS+';color:#ef4444"># FUGA</th>';
+  html+='<th style="'+thS+';color:#ef4444">% FUGA</th>';
+  html+='<th style="'+thS+';text-align:left">PRINCIPALES RUTAS</th>';
   html+='</tr></thead><tbody>';
 
   cods.forEach(function(cod,ri){
     var c=clientes[cod];
-    var pct=c.nb>0?Math.round(c.nr/c.nb*100):0;
-    var pctCol=pct>=70?'#4ade80':pct>=40?'#f59e0b':'#ef4444';
+    var pctR=c.nb>0?Math.round(c.nr/c.nb*100):0;
+    var pctF=c.nb>0?Math.round(c.nf/c.nb*100):0;
+    var retCol=pctR>=70?'#4ade80':pctR>=40?'#f59e0b':'#ef4444';
+    var fugCol=pctF===0?'#4ade80':pctF<=30?'#f59e0b':'#ef4444';
     var bg=ri%2===0?'#07111c':'#050d16';
     var cCol=flotaColor(cod);
     var topCors=Object.keys(c.cors).sort(function(a,b){return c.cors[b].nb-c.cors[a].nb;}).slice(0,4);
     var corsHtml=topCors.map(function(cor){
       var cc=c.cors[cor];
       var cp=cc.nb>0?Math.round(cc.nr/cc.nb*100):0;
+      var cf=cc.nb>0?Math.round(cc.nf/cc.nb*100):0;
       var ccol=cp>=70?'#4ade80':cp>=40?'#f59e0b':'#ef4444';
-      return '<span style="background:#0c1a28;border:1px solid #1e3a4e;border-radius:4px;padding:2px 7px;font-size:.62rem;white-space:nowrap;display:inline-flex;gap:5px;align-items:center">'+
+      return '<span style="background:#0c1a28;border:1px solid #1e3a4e;border-radius:4px;padding:2px 7px;font-size:.62rem;white-space:nowrap;display:inline-flex;gap:4px;align-items:center">'+
         '<span style="color:#64748b">'+cor+'</span>'+
-        '<strong style="color:'+ccol+'">'+cp+'%</strong>'+
-        '<span style="color:#334155">('+cc.nb+')</span></span>';
+        '<span style="color:#334155">'+cc.nb+'v</span>'+
+        '<strong style="color:'+ccol+'">'+cp+'%ret</strong>'+
+        (cf>0?'<span style="color:#ef4444">'+cf+'%fug</span>':'')+
+        '</span>';
     }).join(' ');
     html+='<tr style="background:'+bg+';border-bottom:1px solid #0a1a26">';
     html+='<td style="padding:5px 10px"><span style="background:'+cCol+'22;color:'+cCol+';font-weight:700;font-size:.7rem;border-radius:4px;padding:2px 8px">'+clientLabel(cod)+'</span></td>';
     html+='<td style="padding:5px 10px;text-align:center;color:#94a3b8;font-weight:700">'+c.nb+'</td>';
     html+='<td style="padding:5px 10px;text-align:center;color:#4ade80;font-weight:700">'+c.nr+'</td>';
-    html+='<td style="padding:5px 10px;text-align:center;color:'+pctCol+';font-weight:800;font-size:.88rem">'+pct+'%</td>';
+    html+='<td style="padding:5px 10px;text-align:center;color:'+retCol+';font-weight:800;font-size:.85rem">'+pctR+'%</td>';
+    html+='<td style="padding:5px 10px;text-align:center;color:#ef4444;font-weight:700">'+c.nf+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;color:'+fugCol+';font-weight:800;font-size:.85rem">'+pctF+'%</td>';
     html+='<td style="padding:5px 10px"><div style="display:flex;gap:5px;flex-wrap:wrap">'+corsHtml+'</div></td>';
     html+='</tr>';
   });
