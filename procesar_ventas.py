@@ -1239,8 +1239,9 @@ body.light #diasLabel{color:#3a5a72!important}
       <select id="flotaEstadoSel" onchange="buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
         <option value="">Todos</option>
+        <option value="EN_RUTA">🚛 En ruta (≤2 días)</option>
         <option value="FUGA">Fuga otra transportadora</option>
-        <option value="PENDIENTE">En destino (&lt;5 días)</option>
+        <option value="PENDIENTE">En destino (3-5 días)</option>
         <option value="RETORNO">Retorno Tractocar</option>
         <option value="INTERIOR">Ruta interior</option>
       </select>
@@ -2952,27 +2953,25 @@ function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
   var hoyF=new Date(); hoyF.setHours(0,0,0,0);
   diasRef=Math.max(0,Math.floor((hoyF-new Date(lastTrip.f+'T00:00:00'))/86400000));
 
+  function clasificarSinViaje(dias, region){
+    if(dias<=2)  return {estado:'EN_RUTA',  estadoLabel:'🚛 En ruta → '+region+' ('+dias+'d)',     estadoCol:'#22d3ee'};
+    if(dias<=5)  return {estado:'PENDIENTE', estadoLabel:'⏳ En '+region+' ('+dias+'d)',            estadoCol:'#f59e0b'};
+    return       {estado:'FUGA',     estadoLabel:'✗ Fuga otra transp. ('+dias+'d en '+region+')', estadoCol:'#ef4444'};
+  }
+
   if(dir==='BAJA'){
-    // Bajó a la costa — ¿retornó con Tractocar?
     if(!sigViaje){
-      if(diasRef>5){
-        estado='FUGA'; estadoLabel='✗ Fuga otra transp. ('+diasRef+'d en '+regionDes+')'; estadoCol='#ef4444';
-      } else {
-        estado='PENDIENTE'; estadoLabel='⏳ En '+regionDes+' ('+diasRef+'d)'; estadoCol='#f59e0b';
-      }
+      var r=clasificarSinViaje(diasRef,regionDes);
+      estado=r.estado; estadoLabel=r.estadoLabel; estadoCol=r.estadoCol;
     } else if(esCosta(sigViaje.ori)){
       estado='RETORNO'; estadoLabel='✓ Retornó (Tractocar)'; estadoCol='#4ade80';
     } else {
       estado='FUGA'; estadoLabel='✗ Fuga otra transp.'; estadoCol='#ef4444';
     }
   } else if(dir==='SUBE'||dir==='SALE_COSTA'){
-    // Salió de la costa al interior — ¿hizo siguiente viaje?
     if(!sigViaje){
-      if(diasRef>5){
-        estado='FUGA'; estadoLabel='✗ Fuga otra transp. ('+diasRef+'d en '+regionDes+')'; estadoCol='#ef4444';
-      } else {
-        estado='PENDIENTE'; estadoLabel='⏳ En '+regionDes+' ('+diasRef+'d)'; estadoCol='#f59e0b';
-      }
+      var r=clasificarSinViaje(diasRef,regionDes);
+      estado=r.estado; estadoLabel=r.estadoLabel; estadoCol=r.estadoCol;
     } else {
       var sd=dirRuta(sigViaje.ori,sigViaje.des);
       if(sd==='BAJA'){
@@ -2982,13 +2981,9 @@ function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
       }
     }
   } else {
-    // Ruta interior → interior
     if(!sigViaje){
-      if(diasRef>5){
-        estado='FUGA'; estadoLabel='✗ Fuga otra transp. ('+diasRef+'d en '+regionDes+')'; estadoCol='#ef4444';
-      } else {
-        estado='PENDIENTE'; estadoLabel='⏳ En '+regionDes+' ('+diasRef+'d)'; estadoCol='#f59e0b';
-      }
+      var r=clasificarSinViaje(diasRef,regionDes);
+      estado=r.estado; estadoLabel=r.estadoLabel; estadoCol=r.estadoCol;
     } else {
       estado='INTERIOR'; estadoLabel='↔ Ruta interior'; estadoCol='#64748b';
     }
@@ -3024,6 +3019,7 @@ function buildFlota(){
   var nRetorno=todas.filter(function(f){return f.estado==='RETORNO';}).length;
   var nFuga=todas.filter(function(f){return f.estado==='FUGA';}).length;
   var nPend=todas.filter(function(f){return f.estado==='PENDIENTE';}).length;
+  var nEnRuta=todas.filter(function(f){return f.estado==='EN_RUTA';}).length;
   var nInterior=todas.filter(function(f){return f.estado==='INTERIOR';}).length;
   var pctFuga=nBaja>0?Math.round(nFuga/nBaja*100):0;
   var pctRet=nBaja>0?Math.round(nRetorno/nBaja*100):0;
@@ -3037,9 +3033,10 @@ function buildFlota(){
   }
   document.getElementById('flotaKpi').innerHTML=
     kpiBox('PLACAS EN SEGUIMIENTO',nBaja,'viajes con Tractocar','#60a5fa')+
+    kpiBox('🚛 EN RUTA',nEnRuta,'≤2 días, en tránsito','#22d3ee')+
     kpiBox('RETORNO TRACTOCAR',nRetorno,pctRet+'% del total','#4ade80')+
     kpiBox('FUGA OTRA TRANSP.',nFuga,pctFuga+'% del total','#ef4444')+
-    kpiBox('EN DESTINO <5 DÍAS',nPend,'pendiente nuevo viaje','#f59e0b')+
+    kpiBox('EN DESTINO 3-5 DÍAS',nPend,'en espera nuevo viaje','#f59e0b')+
     kpiBox('RUTA INTERIOR',nInterior,'siguiente viaje interior','#64748b');
 
   // Resumen por cliente del viaje de BAJADA
@@ -3060,6 +3057,7 @@ function buildFlota(){
     var sc=0;
     if(f.estado==='FUGA') sc+=40;
     else if(f.estado==='PENDIENTE') sc+=5;
+    else if(f.estado==='EN_RUTA') sc+=0;
     var nb=s.nb||0, nr=s.nr||0;
     if(nb>=3){
       var pr=nr/nb;
@@ -3074,7 +3072,7 @@ function buildFlota(){
   });
 
   // Sort dinámico por columna
-  var ORD_EST={FUGA:0,PENDIENTE:1,RETORNO:2,INTERIOR:3};
+  var ORD_EST={FUGA:0,PENDIENTE:1,EN_RUTA:2,RETORNO:3,INTERIOR:4};
   filas.sort(function(a,b){
     var d=flotaSortDir, v=0;
     var sA=a._stats||{}, sB=b._stats||{};
@@ -3257,7 +3255,62 @@ function buildFlotaInteligente(filas){
 }
 
 function buildResumenClientes(todas){
-  // Agrupa fugas por CLIENTE DEL VIAJE SIGUIENTE (el que se "llevó" la placa)
+  var div=document.getElementById('flotaResumenClientes');
+  if(!div) return;
+
+  // ── Tabla por corredor ──────────────────────────────────────────────
+  var porCor={};
+  todas.forEach(function(f){
+    var cor=f.lastBaja.co||'SIN CORREDOR';
+    if(!porCor[cor]) porCor[cor]={en_ruta:0,pendiente:0,retorno:0,fuga:0,interior:0,total:0};
+    porCor[cor].total++;
+    var e=f.estado.toLowerCase();
+    if(f.estado==='EN_RUTA') porCor[cor].en_ruta++;
+    else if(f.estado==='PENDIENTE') porCor[cor].pendiente++;
+    else if(f.estado==='RETORNO') porCor[cor].retorno++;
+    else if(f.estado==='FUGA') porCor[cor].fuga++;
+    else if(f.estado==='INTERIOR') porCor[cor].interior++;
+  });
+
+  var cors=Object.keys(porCor).sort(function(a,b){
+    return (porCor[b].fuga+porCor[b].en_ruta+porCor[b].pendiente)-(porCor[a].fuga+porCor[a].en_ruta+porCor[a].pendiente);
+  });
+
+  var thS='padding:6px 10px;font-size:.65rem;font-weight:700;color:#64748b;border-bottom:1px solid #1e3a4e;white-space:nowrap;text-align:center';
+  var html='<div style="margin-bottom:16px;overflow-x:auto">';
+  html+='<div style="color:#60a5fa;font-size:.72rem;font-weight:700;margin-bottom:8px;letter-spacing:.05em">📊 RESUMEN POR CORREDOR</div>';
+  html+='<table style="width:100%;border-collapse:collapse;background:#060e18;border-radius:8px;overflow:hidden;border:1px solid #0e2030;font-size:.7rem">';
+  html+='<thead><tr>';
+  html+='<th style="'+thS+';text-align:left;min-width:200px">CORREDOR</th>';
+  html+='<th style="'+thS+';color:#22d3ee">🚛 EN RUTA</th>';
+  html+='<th style="'+thS+';color:#f59e0b">⏳ EN DESTINO</th>';
+  html+='<th style="'+thS+';color:#4ade80">✓ RETORNO</th>';
+  html+='<th style="'+thS+';color:#ef4444">✗ FUGA</th>';
+  html+='<th style="'+thS+';color:#64748b">↔ INTERIOR</th>';
+  html+='<th style="'+thS+';color:#94a3b8">TOTAL</th>';
+  html+='</tr></thead><tbody>';
+
+  cors.forEach(function(cor,ri){
+    var c=porCor[cor];
+    var bg=ri%2===0?'#07111c':'#050d16';
+    var fugaCol=c.fuga>0?'color:#ef4444;font-weight:700':'color:#1e3a4e';
+    var rutaCol=c.en_ruta>0?'color:#22d3ee;font-weight:700':'color:#1e3a4e';
+    var pendCol=c.pendiente>0?'color:#f59e0b;font-weight:700':'color:#1e3a4e';
+    var retCol=c.retorno>0?'color:#4ade80;font-weight:700':'color:#1e3a4e';
+    var intCol=c.interior>0?'color:#64748b':'color:#1e3a4e';
+    html+='<tr style="background:'+bg+';border-bottom:1px solid #0a1a26">';
+    html+='<td style="padding:5px 10px;color:#cbd5e1;font-weight:600">'+cor+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;'+rutaCol+'">'+c.en_ruta+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;'+pendCol+'">'+c.pendiente+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;'+retCol+'">'+c.retorno+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;'+fugaCol+'">'+c.fuga+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;'+intCol+'">'+c.interior+'</td>';
+    html+='<td style="padding:5px 10px;text-align:center;color:#475569">'+c.total+'</td>';
+    html+='</tr>';
+  });
+  html+='</tbody></table></div>';
+
+  // ── Fugas por transportadora ─────────────────────────────────────────
   var fugasPor={};
   todas.filter(function(f){return f.estado==='FUGA';}).forEach(function(f){
     var c=f.clienteSig||'DESCONOCIDO';
@@ -3269,33 +3322,31 @@ function buildResumenClientes(todas){
     retPor[c]=(retPor[c]||0)+1;
   });
 
-  var div=document.getElementById('flotaResumenClientes');
-  if(!div) return;
-  if(!Object.keys(fugasPor).length && !Object.keys(retPor).length){
-    div.innerHTML=''; return;
+  if(Object.keys(fugasPor).length || Object.keys(retPor).length){
+    html+='<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;padding:12px;background:#060e18;border-radius:8px;border:1px solid #0e2030">';
+    if(Object.keys(fugasPor).length){
+      html+='<div><div style="color:#ef4444;font-size:.7rem;font-weight:700;margin-bottom:6px">✗ FUGAS · Siguiente viaje de la placa fue con:</div>';
+      html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      Object.keys(fugasPor).sort(function(a,b){return fugasPor[b]-fugasPor[a];}).forEach(function(c){
+        var col=flotaColor(c);
+        html+='<span style="background:'+col+'22;color:'+col+';border-radius:6px;padding:4px 12px;font-size:.72rem;font-weight:700">'+
+          clientLabel(c)+' <strong style="color:#ef4444">'+fugasPor[c]+'</strong></span>';
+      });
+      html+='</div></div>';
+    }
+    if(Object.keys(retPor).length){
+      html+='<div><div style="color:#4ade80;font-size:.7rem;font-weight:700;margin-bottom:6px">✓ RETORNOS · Viaje de subida con:</div>';
+      html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      Object.keys(retPor).sort(function(a,b){return retPor[b]-retPor[a];}).forEach(function(c){
+        var col=flotaColor(c);
+        html+='<span style="background:'+col+'22;color:'+col+';border-radius:6px;padding:4px 12px;font-size:.72rem;font-weight:700">'+
+          clientLabel(c)+' <strong style="color:#4ade80">'+retPor[c]+'</strong></span>';
+      });
+      html+='</div></div>';
+    }
+    html+='</div>';
   }
 
-  var html='<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;padding:12px;background:#060e18;border-radius:8px;border:1px solid #0e2030">';
-  html+='<div><div style="color:#ef4444;font-size:.7rem;font-weight:700;margin-bottom:6px">✗ FUGAS · Siguiente viaje de la placa fue con:</div>';
-  html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
-  Object.keys(fugasPor).sort(function(a,b){return fugasPor[b]-fugasPor[a];}).forEach(function(c){
-    var col=flotaColor(c);
-    html+='<span style="background:'+col+'22;color:'+col+';border-radius:6px;padding:4px 12px;font-size:.72rem;font-weight:700">'+
-      clientLabel(c)+' <strong style="color:#ef4444">'+fugasPor[c]+'</strong></span>';
-  });
-  html+='</div></div>';
-
-  if(Object.keys(retPor).length){
-    html+='<div><div style="color:#4ade80;font-size:.7rem;font-weight:700;margin-bottom:6px">✓ RETORNOS · Viaje de subida con:</div>';
-    html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
-    Object.keys(retPor).sort(function(a,b){return retPor[b]-retPor[a];}).forEach(function(c){
-      var col=flotaColor(c);
-      html+='<span style="background:'+col+'22;color:'+col+';border-radius:6px;padding:4px 12px;font-size:.72rem;font-weight:700">'+
-        clientLabel(c)+' <strong style="color:#4ade80">'+retPor[c]+'</strong></span>';
-    });
-    html+='</div></div>';
-  }
-  html+='</div>';
   div.innerHTML=html;
 }
 
