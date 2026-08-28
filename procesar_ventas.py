@@ -2781,7 +2781,7 @@ function buildAjovRutas(allMeses, mesActIdx){
    - PENDIENTE = sin viaje posterior en datos (placa aún en costa)
    ====================================================== */
 var flotaSelectedPlaca = null;
-var flotaSortCol = 'fechaBaja';
+var flotaSortCol = 'prio';
 var flotaSortDir = -1;
 function flotaSort(col){
   if(flotaSortCol===col){ flotaSortDir*=-1; }
@@ -3025,48 +3025,46 @@ function buildFlota(){
     return !estadoFil || f.estado===estadoFil;
   });
 
+  // Calcular scores ANTES de ordenar (para que el sort por prio/bajadas/% ret funcione)
+  var stats=window.FLOTA_STATS||{};
+  var vtAll=todas.map(function(f){return (stats[f.placa]||{}).vt||0;});
+  var vtMedian=vtAll.slice().sort(function(a,b){return a-b;})[Math.floor(vtAll.length/2)]||0;
+  filas.forEach(function(f){
+    var s=stats[f.placa]||{};
+    var sc=0;
+    if(f.estado==='FUGA') sc+=40;
+    else if(f.estado==='PENDIENTE') sc+=5;
+    var nb=s.nb||0, nr=s.nr||0;
+    if(nb>=3){
+      var pr=nr/nb;
+      if(pr===0)      sc+=35;
+      else if(pr<0.3) sc+=20;
+      else if(pr<0.6) sc+=10;
+    } else if(nb>0 && nr===0){
+      sc+=15;
+    }
+    if((s.vt||0)>vtMedian) sc+=10;
+    f._score=sc; f._stats=s;
+  });
+
   // Sort dinámico por columna
   var ORD_EST={FUGA:0,PENDIENTE:1,RETORNO:2,INTERIOR:3};
   filas.sort(function(a,b){
     var d=flotaSortDir, v=0;
     var sA=a._stats||{}, sB=b._stats||{};
-    if(flotaSortCol==='prio')      v=b._score-a._score;
-    else if(flotaSortCol==='placa') v=a.placa.localeCompare(b.placa);
-    else if(flotaSortCol==='ruta')  v=(a.lastBaja.ori+a.lastBaja.des).localeCompare(b.lastBaja.ori+b.lastBaja.des);
+    // PRIO: score alto = peor = primero → invertir convención para que -1 muestre CRÍTICA arriba
+    if(flotaSortCol==='prio')           v=a._score-b._score;
+    else if(flotaSortCol==='placa')     v=a.placa.localeCompare(b.placa);
+    else if(flotaSortCol==='ruta')      v=(a.lastBaja.ori+a.lastBaja.des).localeCompare(b.lastBaja.ori+b.lastBaja.des);
     else if(flotaSortCol==='clienteBaja') v=(a.clienteBaja||'').localeCompare(b.clienteBaja||'');
-    else if(flotaSortCol==='fechaBaja')   v=a.lastBaja.f.localeCompare(b.lastBaja.f);
-    else if(flotaSortCol==='rutaSig')     v=((a.sigViaje?a.sigViaje.ori+a.sigViaje.des:'')).localeCompare((b.sigViaje?b.sigViaje.ori+b.sigViaje.des:''));
-    else if(flotaSortCol==='clienteSig')  v=(a.clienteSig||'').localeCompare(b.clienteSig||'');
-    else if(flotaSortCol==='fechaSig')    v=((a.sigViaje?a.sigViaje.f:'')).localeCompare((b.sigViaje?b.sigViaje.f:''));
-    else if(flotaSortCol==='estado')      v=(ORD_EST[a.estado]||0)-(ORD_EST[b.estado]||0);
-    else if(flotaSortCol==='bajadas')     v=(sA.nb||0)-(sB.nb||0);
-    else if(flotaSortCol==='pctRet')     v=((sA.nb>0?sA.nr/sA.nb:0))-((sB.nb>0?sB.nr/sB.nb:0));
+    else if(flotaSortCol==='fechaBaja') v=a.lastBaja.f.localeCompare(b.lastBaja.f);
+    else if(flotaSortCol==='rutaSig')   v=((a.sigViaje?a.sigViaje.ori+a.sigViaje.des:'')).localeCompare((b.sigViaje?b.sigViaje.ori+b.sigViaje.des:''));
+    else if(flotaSortCol==='clienteSig') v=(a.clienteSig||'').localeCompare(b.clienteSig||'');
+    else if(flotaSortCol==='fechaSig')  v=((a.sigViaje?a.sigViaje.f:'')).localeCompare((b.sigViaje?b.sigViaje.f:''));
+    else if(flotaSortCol==='estado')    v=(ORD_EST[a.estado]||0)-(ORD_EST[b.estado]||0);
+    else if(flotaSortCol==='bajadas')   v=(sA.nb||0)-(sB.nb||0);
+    else if(flotaSortCol==='pctRet')    v=((sA.nb>0?sA.nr/sA.nb:0))-((sB.nb>0?sB.nr/sB.nb:0));
     return v!==0 ? v*d : b.lastBaja.f.localeCompare(a.lastBaja.f);
-  });
-
-  // Calcular scores y enriquecer filas
-  var stats=window.FLOTA_STATS||{};
-  var vtAll=filas.map(function(f){return (stats[f.placa]||{}).vt||0;});
-  var vtMedian=vtAll.slice().sort(function(a,b){return a-b;})[Math.floor(vtAll.length/2)]||0;
-  filas.forEach(function(f){
-    var s=stats[f.placa]||{};
-    var sc=0;
-    // Estado actual
-    if(f.estado==='FUGA') sc+=40;
-    else if(f.estado==='PENDIENTE') sc+=5;
-    // Historial de retorno
-    var nb=s.nb||0, nr=s.nr||0;
-    if(nb>=3){
-      var pr=nr/nb;
-      if(pr===0)       sc+=35; // nunca ha retornado con Tractocar
-      else if(pr<0.3)  sc+=20; // retorna muy poco
-      else if(pr<0.6)  sc+=10; // retorna a medias
-    } else if(nb>0 && nr===0){
-      sc+=15; // pocas bajadas pero ningún retorno
-    }
-    // Valor económico
-    if((s.vt||0)>vtMedian) sc+=10;
-    f._score=sc; f._stats=s;
   });
 
   // Actualizar panel análisis inteligente (si está abierto)
