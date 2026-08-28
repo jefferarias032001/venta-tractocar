@@ -551,15 +551,34 @@ def main():
     meses_flota = meses_flota[-8:] if len(meses_flota) > 8 else meses_flota
     u_flota = u_flota[u_flota["Mes"].isin(meses_flota)].copy()
 
+    # Agrupar por Manifiesto: un manifiesto = un viaje (sumar AFacturar, primer registro gana)
+    u_flota["_man"] = u_flota["Manifiesto"].astype(str).str.strip()
+    man_flota = (
+        u_flota.groupby("_man", sort=False)
+        .agg(
+            _placa=("_placa", "first"),
+            Origen=("Origen", "first"),
+            Destino=("Destino", "first"),
+            FechaISO=("FechaISO", "first"),
+            Cod=("Cod", "first"),
+            AFacturar=("AFacturar", "sum"),
+            Tipologia=("Tipologia", "first"),
+        )
+        .reset_index()
+    )
+
     flota_dict: dict = {}
-    for _, row in u_flota.iterrows():
+    for _, row in man_flota.iterrows():
+        venta = round(float(row["AFacturar"]), 0)
+        # Excluir manifiestos anulados (AFacturar total = 0 → viaje no realizado)
+        if venta == 0:
+            continue
         placa = str(row["_placa"])
         ori = str(row.get("Origen", "") or "").strip()[:30].upper()
         des = str(row.get("Destino", "") or "").strip()[:30].upper()
         fecha_iso = str(row.get("FechaISO", ""))[:10]
         cod = str(row["Cod"])
-        venta = round(float(row["AFacturar"]), 0)
-        man = str(row.get("Manifiesto", ""))
+        man = str(row["_man"])
         tip = str(row.get("Tipologia", "") or "").strip()
         if not tip or tip in ("nan", "None", "(Sin tipologia)"): tip = ""
         corredor = f"{_region(ori)} - {_region(des)}"
