@@ -570,10 +570,11 @@ def main():
     for p in flota_dict:
         flota_dict[p].sort(key=lambda x: x["f"])
 
-    # Listas de corredores y tipologías únicas (solo de bajadas = destino en región COSTA)
+    # Listas de corredores y tipologías únicas (todas las direcciones, excluye OTRA-OTRA)
     flota_corredores = sorted({
         t["co"] for trips in flota_dict.values() for t in trips
-        if _region(t["des"]) == "COSTA" and _region(t["ori"]) != "COSTA" and t["co"]
+        if t["co"] and t["co"] != "OTRA - OTRA"
+        and not (t["co"].startswith("OTRA") and t["co"].endswith("OTRA"))
     })
     flota_tipologias = sorted({
         t["ti"] for trips in flota_dict.values() for t in trips
