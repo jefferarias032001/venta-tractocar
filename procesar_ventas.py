@@ -855,6 +855,74 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
 .view-tab{background:none;border:none;border-bottom:2px solid transparent;color:#64748b;font-size:.78rem;font-weight:600;padding:10px 18px;cursor:pointer;transition:all .15s}
 .view-tab.active{color:#f97316;border-bottom-color:#f97316}
 .view-tab:hover:not(.active){color:#94a3b8}
+
+/* ── TEMA CLARO ── */
+body.light{background:#edf3f8;color:#1a2d3d}
+body.light header{background:linear-gradient(135deg,#162040 0%,#1e2e58 100%)}
+body.light .kpi-section{background:linear-gradient(180deg,#e0eaf6 0%,#eaf3fc 100%);border-color:#c0d4e8}
+body.light .kpi-supertitle{color:rgba(0,0,0,.45)}
+body.light .kpi-nac{background:linear-gradient(145deg,#e6f7ee,#f0fbf4);box-shadow:0 6px 0 #c8e8d4,0 12px 32px rgba(0,0,0,.1),0 0 0 1px rgba(34,197,94,.3)}
+body.light .kpi-imp{background:linear-gradient(145deg,#e6f0fc,#f0f7ff);box-shadow:0 6px 0 #c8dcf4,0 12px 32px rgba(0,0,0,.1),0 0 0 1px rgba(59,130,246,.3)}
+body.light .kpi-exp{background:linear-gradient(145deg,#fef3e6,#fff8ef);box-shadow:0 6px 0 #f4dfc0,0 12px 32px rgba(0,0,0,.1),0 0 0 1px rgba(249,115,22,.3)}
+body.light .kpi-ced{background:linear-gradient(145deg,#f3eefe,#f8f4ff);box-shadow:0 6px 0 #ddd0f4,0 12px 32px rgba(0,0,0,.1),0 0 0 1px rgba(168,85,247,.3)}
+body.light .kpi-venta-val{color:#0f1923}
+body.light .kpi-venta-sub{color:rgba(0,0,0,.45)}
+body.light .kpi-stat-lbl{color:rgba(0,0,0,.45)}
+body.light .kpi-badge{background:rgba(0,0,0,.08)}
+body.light .meta-bar{background:#d8e8f4;border-color:#b8cfe0}
+body.light .chip{background:#c8daea;border-color:#a8c4d8;color:#2d4a5e}
+body.light .chip b{color:#c05010}
+body.light .filter-bar{background:#d8eaf6;border-color:#aecce4}
+body.light .filter-label{color:#3a5a72}
+body.light .seg-btn{background:#c4d8ec;border-color:#a0bcd4;color:#1e3a50}
+body.light .seg-btn:hover:not(.active){background:#b0ccde;color:#0f2535}
+body.light .seg-btn-sub{background:#ccdde8;border-color:#a8c4d4;color:#2a4a5e}
+body.light .seg-btn-sub:hover:not(.active){background:#b8ccda;color:#0f2535}
+body.light .range-wrap{color:#3a5a72}
+body.light .day-input{background:#eef5fc;border-color:#a8c4d8;color:#1a2d3d}
+body.light .client-btn{background:#c4d8ec;border-color:#a0bcd4;color:#1e3a50}
+body.light .client-btn:hover{background:#b0ccde;color:#0f2535}
+body.light .client-dropdown{background:#f0f7fc;border-color:#a0bcd4;box-shadow:0 8px 24px rgba(0,0,0,.15)}
+body.light .client-item{color:#1e3a50}
+body.light .client-item:hover{color:#0f1923}
+body.light .dd-actions{border-color:#b8cfe0}
+body.light .view-tabs{background:#ccdde8;border-color:#a8c4d4}
+body.light .view-tab{color:#3a5a72}
+body.light .view-tab.active{color:#c05010;border-bottom-color:#c05010}
+body.light .view-tab:hover:not(.active){color:#1a2d3d}
+body.light select{background:#eef5fc!important;border-color:#a8c4d8!important;color:#1a2d3d!important}
+body.light input[type=text]{background:#eef5fc!important;border-color:#a8c4d8!important;color:#1a2d3d!important}
+body.light input[type=text]::placeholder{color:#7a9ab0!important}
+body.light thead th{background:#c0d8ee;color:#1e3a50;border-bottom-color:#90b8d4}
+body.light thead th:hover{background:#aacce0;color:#0f1923}
+body.light tbody tr{border-bottom-color:#c0d4e4}
+body.light tbody tr:nth-child(odd){background:#f0f7fc}
+body.light tbody tr:nth-child(even){background:#e4f0f8}
+body.light tbody tr:hover{background:#cce0f0!important}
+body.light tbody tr.total-row{background:#c0d8ee;border-top-color:#c05010}
+body.light tbody tr.otros-row{background:#daeaf6;color:#3a5a72}
+body.light tr.otros-detail{background:#eaf4fc}
+body.light tr.otros-detail td{color:#3a5a72}
+body.light .ops-th{background:#c8dcea;color:#2a4a5e;border-color:#a0c0d4}
+body.light .ops-th:hover{background:#b8cede;color:#0f1923}
+body.light .ops-td{border-color:#c0d4e4}
+body.light .ops-tr:hover td{background:#d8ecf8}
+body.light .ops-total td{background:#b8d4e8;border-top-color:#c05010}
+body.light .hcCard{background:#e8f2fa;border-color:#b0cce0}
+body.light .hyr-btn{border-color:#a0bcd4;color:#3a5a72}
+body.light .hyr-btn.active{background:#b8d4e8;border-color:#6090b8;color:#c05010}
+body.light .obs-input{background:#eef5fc;border-color:#a8c4d8;color:#1a2d3d}
+body.light .note{color:#5a7a8a}
+body.light .neu{color:#6a8a9a}
+body.light .pos{color:#16844a}
+body.light .neg{color:#c02020}
+body.light .bar-bg{background:#b8d0e4}
+body.light .perd-th{background:#c0d8ee!important;color:#1e3a50!important;border-color:#a0c0d4!important}
+body.light .dd-link{color:#c05010}
+body.light #diasLabel{color:#3a5a72!important}
+/* toggle button */
+.btn-theme{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);color:#e8edf3;border-radius:7px;padding:7px 13px;font-size:.85rem;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-theme:hover{background:rgba(255,255,255,.2)}
 </style>
 </head>
 <body>
@@ -866,7 +934,10 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       <div class="sub" id="subTitle"></div>
     </div>
   </div>
-  <button class="btn btn-dl" onclick="descargarCSV()">&#8659; Descargar CSV</button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn-theme" id="themeToggleBtn" onclick="toggleTheme()" title="Cambiar tema">🌙</button>
+    <button class="btn btn-dl" onclick="descargarCSV()">&#8659; Descargar CSV</button>
+  </div>
 </header>
 
 <!-- KPIs y proyección: solo visible en Tabla Nacional -->
@@ -1714,7 +1785,24 @@ function getGlobalFilters(){
   };
 }
 
+/* ── TEMA ── */
+function toggleTheme(){
+  var isLight=document.body.classList.toggle('light');
+  localStorage.setItem('tcTheme',isLight?'light':'dark');
+  var btn=document.getElementById('themeToggleBtn');
+  if(btn) btn.textContent=isLight?'🌙':'☀️';
+}
+function initTheme(){
+  var saved=localStorage.getItem('tcTheme');
+  if(saved==='light'){
+    document.body.classList.add('light');
+    var btn=document.getElementById('themeToggleBtn');
+    if(btn) btn.textContent='🌙';
+  }
+}
+
 document.addEventListener('DOMContentLoaded',function(){
+  initTheme();
   initGlobalFilters();
   document.querySelectorAll('.ops-th').forEach(function(th){
     th.addEventListener('click',function(){
