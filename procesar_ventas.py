@@ -369,6 +369,28 @@ def main():
     print(f"  Otros clit:  {otros_count} agrupados en 'OTROS CLIENTES'")
     print("=" * 64)
 
+    # Clasificación de ciudades en regiones (usada en Pérdidas y en FLOTA)
+    _REGIONES = [
+        ('COSTA',        ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA']),
+        ('CUNDINAMARCA', ['BOGOTA','MADRID','GUACHETA','SAMACA','FACATATIVA','FUNZA','SOACHA','TOCANCIPA','MOSQUERA','ZIPAQUIRA','CHIA','CAJICA']),
+        ('VALLE',        ['CALI','YUMBO','PALMIRA','BUGA','TULUA']),
+        ('ANTIOQUIA',    ['MEDELLIN','ITAGUI','BELLO','COPACABANA','ENVIGADO','RIONEGRO','SABANETA']),
+        ('EJE CAFETERO', ['MANIZALES','ARMENIA','PEREIRA','DOSQUEBRADAS','CARTAGO']),
+        ('SANTANDER',    ['BUCARAMANGA','BARRANCABERMEJA','GIRON','FLORIDABLANCA']),
+        ('TOLIMA',       ['IBAGUE','ESPINAL','FLANDES','MELGAR']),
+        ('BOYACA',       ['TUNJA','DUITAMA','SOGAMOSO','NOBSA']),
+        ('NORTE SANT.',  ['CUCUTA','OCANA']),
+        ('NARIÑO',       ['PASTO','IPIALES','TUMACO']),
+        ('HUILA',        ['NEIVA','GARZON']),
+        ('META',         ['VILLAVICENCIO','ACACIAS']),
+    ]
+    def _region(ciudad):
+        c = str(ciudad or '').upper()
+        for reg, claves in _REGIONES:
+            if any(k in c for k in claves):
+                return reg
+        return 'OTRA'
+
     # ---- 5. MANIFIESTOS A PERDIDA (NACIONAL mes actual) ----
     m_act["COMPRA"] = m_act["AFacturar"] - m_act["Utilidad"]
     man_grp = (m_act.groupby("Manifiesto")
@@ -376,6 +398,9 @@ def main():
                     Fecha=("Fecha","first"),
                     Dia=("Dia","first"),
                     Subseg=("Subseg","first"),
+                    Origen=("Origen","first"),
+                    Destino=("Destino","first"),
+                    Tipologia=("Tipologia","first"),
                     VENTA=("AFacturar","sum"),
                     COMPRA=("COMPRA","sum"),
                     OBs=("OB","nunique"))
@@ -388,6 +413,10 @@ def main():
          "cod": str(r["Cod"]),
          "fecha": str(r["Fecha"])[:10] if pd.notna(r["Fecha"]) else "",
          "dia": int(r["Dia"]) if pd.notna(r["Dia"]) else 0,
+         "ori": str(r.get("Origen","") or "").strip()[:30].upper(),
+         "des": str(r.get("Destino","") or "").strip()[:30].upper(),
+         "tip": str(r.get("Tipologia","") or "").strip() if str(r.get("Tipologia","") or "") not in ("nan","None","(Sin tipologia)") else "",
+         "cor": f"{_region(str(r.get('Origen','') or '').strip().upper())} - {_region(str(r.get('Destino','') or '').strip().upper())}",
          "subseg": str(r["Subseg"]) if pd.notna(r["Subseg"]) else "",
          "venta": round(float(r["VENTA"]), 0),
          "compra": round(float(r["COMPRA"]), 0),
@@ -397,6 +426,13 @@ def main():
         for _, r in perdidas_df.iterrows()
     ]
     print(f"  Manifiestos a perdida: {len(perdidas_js)}")
+
+    # Tipologías y corredores únicos del nacional (para filtros globales)
+    _tip_nac = sorted({r["tip"] for r in perdidas_js if r.get("tip")})
+    _cor_nac = sorted({
+        r["cor"] for r in perdidas_js
+        if r.get("cor") and "OTRA" not in r["cor"]
+    })
 
     # ---- HISTORICO: tendencias mes a mes de clientes NACIONAL ----
     hist_dict = {}
@@ -513,28 +549,6 @@ def main():
     meses_flota = meses_flota[-8:] if len(meses_flota) > 8 else meses_flota
     u_flota = u_flota[u_flota["Mes"].isin(meses_flota)].copy()
 
-    # Clasificación de ciudades en regiones para filtro de corredor
-    _REGIONES = [
-        ('COSTA',        ['CARTAGENA','BARRANQUILLA','SANTA MARTA','BUENAVENTURA','VALLEDUPAR','MONTERIA','SINCELEJO','RIOHACHA']),
-        ('CUNDINAMARCA', ['BOGOTA','MADRID','GUACHETA','SAMACA','FACATATIVA','FUNZA','SOACHA','TOCANCIPA','MOSQUERA','ZIPAQUIRA','CHIA','CAJICA']),
-        ('VALLE',        ['CALI','YUMBO','PALMIRA','BUGA','TULUA']),
-        ('ANTIOQUIA',    ['MEDELLIN','ITAGUI','BELLO','COPACABANA','ENVIGADO','RIONEGRO','SABANETA']),
-        ('EJE CAFETERO', ['MANIZALES','ARMENIA','PEREIRA','DOSQUEBRADAS','CARTAGO']),
-        ('SANTANDER',    ['BUCARAMANGA','BARRANCABERMEJA','GIRON','FLORIDABLANCA']),
-        ('TOLIMA',       ['IBAGUE','ESPINAL','FLANDES','MELGAR']),
-        ('BOYACA',       ['TUNJA','DUITAMA','SOGAMOSO','NOBSA']),
-        ('NORTE SANT.',  ['CUCUTA','OCANA']),
-        ('NARIÑO',       ['PASTO','IPIALES','TUMACO']),
-        ('HUILA',        ['NEIVA','GARZON']),
-        ('META',         ['VILLAVICENCIO','ACACIAS']),
-    ]
-    def _region(ciudad):
-        c = str(ciudad or '').upper()
-        for reg, claves in _REGIONES:
-            if any(k in c for k in claves):
-                return reg
-        return 'OTRA'
-
     flota_dict: dict = {}
     for _, row in u_flota.iterrows():
         placa = str(row["_placa"])
@@ -647,6 +661,8 @@ def main():
         f"window.OPS_KPI={json.dumps(ops_kpi, ensure_ascii=False)};"
         f"window.OPS_DIARIO={json.dumps(ops_diario, ensure_ascii=False)};"
         f"window.PERDIDAS={json.dumps(perdidas_js, ensure_ascii=False)};"
+        f"window.TIPOLOGIAS_NAC={json.dumps(_tip_nac, ensure_ascii=False)};"
+        f"window.CORREDORES_NAC={json.dumps(_cor_nac, ensure_ascii=False)};"
         f"window.HISTORICO={json.dumps(hist_dict, ensure_ascii=False)};"
         f"window.OPS_HISTORICO={json.dumps(ops_hist, ensure_ascii=False)};"
         f"window.AJOV_HIST={json.dumps(ajov_hist_dict, ensure_ascii=False)};"
@@ -853,10 +869,8 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
   <button class="btn btn-dl" onclick="descargarCSV()">&#8659; Descargar CSV</button>
 </header>
 
-<!-- Bloque resumen superior: solo visible en Tabla Nacional -->
+<!-- KPIs y proyección: solo visible en Tabla Nacional -->
 <div id="topSummary">
-
-<!-- KPI Cards + Tabla resumen -->
 <div class="kpi-section">
   <div class="kpi-supertitle">&#9679; Resumen por operación — mes actual</div>
   <div class="kpi-grid" id="kpiGrid"></div>
@@ -881,8 +895,10 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
 </div>
 
 <div class="meta-bar" id="metaBar"></div>
+</div><!-- /topSummary -->
 
-<div class="filter-bar">
+<!-- Barra de filtros: siempre visible -->
+<div class="filter-bar" id="globalFilterBar">
   <!-- Operacion -->
   <div class="filter-group" style="flex-wrap:wrap;gap:6px">
     <span class="filter-label">Operación</span>
@@ -926,9 +942,39 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
       </div>
     </div>
   </div>
-</div>
 
-</div><!-- /topSummary -->
+  <!-- Tipología -->
+  <div class="filter-group">
+    <span class="filter-label">Tipología</span>
+    <select id="globalTipSel" onchange="onGlobalFilter()"
+      style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+      <option value="">Todas</option>
+    </select>
+  </div>
+
+  <!-- Corredor -->
+  <div class="filter-group">
+    <span class="filter-label">Corredor</span>
+    <select id="globalCorSel" onchange="onGlobalFilter()"
+      style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
+      <option value="">Todos</option>
+    </select>
+  </div>
+
+  <!-- Origen -->
+  <div class="filter-group">
+    <span class="filter-label">Origen</span>
+    <input id="globalOriInput" type="text" placeholder="buscar..." oninput="onGlobalFilter()"
+      style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;width:90px">
+  </div>
+
+  <!-- Destino -->
+  <div class="filter-group">
+    <span class="filter-label">Destino</span>
+    <input id="globalDesInput" type="text" placeholder="buscar..." oninput="onGlobalFilter()"
+      style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;width:90px">
+  </div>
+</div>
 
 <!-- Tabs vista -->
 <div class="view-tabs">
@@ -1637,7 +1683,39 @@ function buildOpsTable(){
 }
 
 // Ordenar tabla ops
+/* ---- Inicializar filtros globales ---- */
+function initGlobalFilters(){
+  var tSel=document.getElementById('globalTipSel');
+  if(tSel){
+    tSel.innerHTML='<option value="">Todas</option>';
+    (window.TIPOLOGIAS_NAC||[]).forEach(function(t){
+      var o=document.createElement('option'); o.value=t; o.textContent=t; tSel.appendChild(o);
+    });
+  }
+  var cSel=document.getElementById('globalCorSel');
+  if(cSel){
+    cSel.innerHTML='<option value="">Todos</option>';
+    (window.CORREDORES_NAC||[]).forEach(function(c){
+      var o=document.createElement('option'); o.value=c; o.textContent=c; cSel.appendChild(o);
+    });
+  }
+}
+function onGlobalFilter(){
+  recalc();
+  buildPerdidas();
+  buildHistorico();
+}
+function getGlobalFilters(){
+  return {
+    tip:(document.getElementById('globalTipSel')||{}).value||'',
+    cor:(document.getElementById('globalCorSel')||{}).value||'',
+    ori:((document.getElementById('globalOriInput')||{}).value||'').trim().toUpperCase(),
+    des:((document.getElementById('globalDesInput')||{}).value||'').trim().toUpperCase(),
+  };
+}
+
 document.addEventListener('DOMContentLoaded',function(){
+  initGlobalFilters();
   document.querySelectorAll('.ops-th').forEach(function(th){
     th.addEventListener('click',function(){
       var k=th.getAttribute('data-ok');
@@ -1725,18 +1803,22 @@ function calcPerdidasStats(opKey){
 function buildPerdidas(){
   var raw=(window.PERDIDAS||[]);
   var CLIENTES_OP={'JEMA':1,'AJOV_MOV':1};
+  var gf=getGlobalFilters();
   var data=raw.filter(function(r){
     if(r.dia && (r.dia<d1||r.dia>d2)) return false;
     if(excluidos.has(r.cod)) return false;
+    // Filtros globales nuevos
+    if(gf.tip && r.tip!==gf.tip) return false;
+    if(gf.cor && r.cor!==gf.cor) return false;
+    if(gf.ori && (r.ori||'').indexOf(gf.ori)<0) return false;
+    if(gf.des && (r.des||'').indexOf(gf.des)<0) return false;
     // Filtro por operacion
     if(curOp==='JEMA'||curOp==='AJOV_MOV') return r.cod===curOp;
     if(curOp==='NACIONAL'){
-      // Excluir clientes de operacion y cuentas CED/TL
       if(CLIENTES_OP[r.cod]) return false;
       return !r.subseg||r.subseg.indexOf('CED')<0&&r.subseg.indexOf('TL')<0;
     }
     if(curOp==='CEDIS'||curOp==='COMEX') return false;
-    // TODOS: excluir solo los clientes que no están en ninguna op visible
     return true;
   }).slice();
 
