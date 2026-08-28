@@ -853,6 +853,9 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
   <button class="btn btn-dl" onclick="descargarCSV()">&#8659; Descargar CSV</button>
 </header>
 
+<!-- Bloque resumen superior: solo visible en Tabla Nacional -->
+<div id="topSummary">
+
 <!-- KPI Cards + Tabla resumen -->
 <div class="kpi-section">
   <div class="kpi-supertitle">&#9679; Resumen por operación — mes actual</div>
@@ -924,6 +927,8 @@ tr.otros-detail td{color:#445566;padding:4px 8px 4px 28px}
     </div>
   </div>
 </div>
+
+</div><!-- /topSummary -->
 
 <!-- Tabs vista -->
 <div class="view-tabs">
@@ -1658,6 +1663,9 @@ document.addEventListener('DOMContentLoaded',function(){
 function setView(v, btn){
   document.querySelectorAll('.view-tab').forEach(function(b){b.classList.remove('active');});
   btn.classList.add('active');
+  // Resumen superior solo en Tabla Nacional
+  var ts=document.getElementById('topSummary');
+  if(ts) ts.style.display = v==='tabla' ? '' : 'none';
   document.getElementById('viewTabla').style.display     = v==='tabla'     ? '' : 'none';
   document.getElementById('viewPerdidas').style.display  = v==='perdidas'  ? '' : 'none';
   document.getElementById('viewHistorico').style.display = v==='historico' ? '' : 'none';
