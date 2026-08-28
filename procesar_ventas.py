@@ -2868,106 +2868,90 @@ function initFlota(){
   buildFlota();
 }
 
-/* Analiza una placa y devuelve su estado de vuelta desde Costa */
+/* Analiza una placa y devuelve su estado de movimiento */
 function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
   var raw=window.FLOTA||{};
   var trips=(raw[placa]||[]).slice().sort(function(a,b){return a.f.localeCompare(b.f);});
 
-  // Filtro de bajadas (destino costa)
-  var bajaTrips=trips.filter(function(t){
-    return dirRuta(t.ori,t.des)==='BAJA'
-      && (!refCod || t.cod===refCod)
+  // Viajes filtrados por cliente / mes / corredor / tipología
+  var refTrips=trips.filter(function(t){
+    return (!refCod || t.cod===refCod)
       && (!mesFil || (t.f && t.f.substring(0,7)===mesFil))
       && (!corFil || t.co===corFil)
       && (!tipFil || t.ti===tipFil);
   });
+  if(!refTrips.length) return null;
 
-  // Cuando se selecciona un cliente específico, también considerar viajes no-costeros
-  var clienteTrips = refCod ? trips.filter(function(t){
-    return t.cod===refCod
-      && (!mesFil || (t.f && t.f.substring(0,7)===mesFil))
-      && (!corFil || t.co===corFil)
-      && (!tipFil || t.ti===tipFil);
-  }) : [];
+  // Último viaje que cumple el filtro
+  var lastTrip=refTrips[refTrips.length-1];
 
-  // Sin bajadas: solo mostrar si hay cliente seleccionado y tiene viajes
-  if(!bajaTrips.length){
-    if(!refCod || !clienteTrips.length) return null;
-    // Placa activa con este cliente pero sin rutas costeras → mostrar como ruta interior
-    var lastT=clienteTrips[clienteTrips.length-1];
-    var dir=dirRuta(lastT.ori,lastT.des);
-    // Buscar el siguiente viaje REAL de esta placa (cualquier cliente) después del último viaje
-    var sigV=null;
-    for(var i=0;i<trips.length;i++){
-      if(trips[i].f>lastT.f){sigV=trips[i];break;}
-    }
-    var est,estL,estC;
-    if(sigV){
-      var sigDir=dirRuta(sigV.ori,sigV.des);
-      if(sigDir==='BAJA'){
-        est='RETORNO'; estL='✓ Volvió a costa (Tractocar)'; estC='#4ade80';
-      } else if(sigDir==='SUBE'||sigDir==='SALE_COSTA'){
-        est='RETORNO'; estL='↑ Sube al interior'; estC='#4ade80';
-      } else {
-        est='INTERIOR'; estL='↔ Ruta interior'; estC='#64748b';
-      }
-    } else {
-      // Sin viaje posterior: posible fuga en el retorno
-      var hoy2=new Date(); hoy2.setHours(0,0,0,0);
-      var fU=new Date(lastT.f+'T00:00:00');
-      var dias2=Math.max(0,Math.floor((hoy2-fU)/86400000));
-      if(dir==='SUBE'||dir==='SALE_COSTA'){
-        if(dias2>5){
-          est='PROBABLE_FUGA'; estL='⚠️ Sin retorno a costa ('+dias2+'d)'; estC='#f97316';
-        } else {
-          est='PENDIENTE'; estL='⏳ En interior ('+dias2+'d)'; estC='#f59e0b';
-        }
-      } else {
-        est='INTERIOR'; estL='↔ Ruta interior'; estC='#64748b';
-      }
-    }
-    return {
-      placa:placa, lastBaja:lastT, sigViaje:sigV,
-      estado:est, estadoLabel:estL, estadoCol:estC,
-      clienteBaja:lastT.cod, clienteSig:sigV?sigV.cod:null, diasEnCosta:0,
-    };
-  }
-
-  // Último viaje de bajada con el cliente seleccionado
-  var lastBaja=bajaTrips[bajaTrips.length-1];
-
-  // Siguiente viaje de la placa DESPUÉS de esa bajada
+  // Siguiente viaje de la placa EN TODO EL DATASET después del último filtrado
   var sigViaje=null;
   for(var i=0;i<trips.length;i++){
-    if(trips[i].f>lastBaja.f){sigViaje=trips[i];break;}
+    if(trips[i].f>lastTrip.f){sigViaje=trips[i];break;}
   }
 
-  var estado,estadoLabel,estadoCol,diasEnCosta=0;
-  if(!sigViaje){
-    var hoy=new Date(); hoy.setHours(0,0,0,0);
-    var fBaja=new Date(lastBaja.f+'T00:00:00');
-    diasEnCosta=Math.max(0,Math.floor((hoy-fBaja)/86400000));
-    if(diasEnCosta>5){
-      estado='PROBABLE_FUGA'; estadoLabel='⚠️ Prob. Fuga ('+diasEnCosta+'d)'; estadoCol='#f97316';
+  var dir=dirRuta(lastTrip.ori,lastTrip.des);
+  var estado,estadoLabel,estadoCol,diasRef=0;
+
+  if(dir==='BAJA'){
+    // Último viaje bajó a la costa — ¿retornó con Tractocar?
+    if(!sigViaje){
+      var hoy=new Date(); hoy.setHours(0,0,0,0);
+      diasRef=Math.max(0,Math.floor((hoy-new Date(lastTrip.f+'T00:00:00'))/86400000));
+      if(diasRef>5){
+        estado='PROBABLE_FUGA'; estadoLabel='⚠️ Prob. Fuga ('+diasRef+'d en costa)'; estadoCol='#f97316';
+      } else {
+        estado='PENDIENTE'; estadoLabel='⏳ En Costa ('+diasRef+'d)'; estadoCol='#f59e0b';
+      }
+    } else if(esCosta(sigViaje.ori)){
+      estado='RETORNO'; estadoLabel='✓ Retornó (Tractocar)'; estadoCol='#4ade80';
     } else {
-      estado='PENDIENTE'; estadoLabel='⏳ En Costa ('+diasEnCosta+'d)'; estadoCol='#f59e0b';
+      estado='FUGA'; estadoLabel='✗ Fuga (subió con otro)'; estadoCol='#ef4444';
     }
-  } else if(esCosta(sigViaje.ori)){
-    estado='RETORNO'; estadoLabel='✓ Retorno Tractocar'; estadoCol='#4ade80';
+  } else if(dir==='SUBE'||dir==='SALE_COSTA'){
+    // Último viaje salió de la costa al interior — ¿hizo el siguiente viaje?
+    if(!sigViaje){
+      var hoy2=new Date(); hoy2.setHours(0,0,0,0);
+      diasRef=Math.max(0,Math.floor((hoy2-new Date(lastTrip.f+'T00:00:00'))/86400000));
+      if(diasRef>5){
+        estado='PROBABLE_FUGA'; estadoLabel='⚠️ Sin nuevo viaje ('+diasRef+'d)'; estadoCol='#f97316';
+      } else {
+        estado='PENDIENTE'; estadoLabel='⏳ En interior ('+diasRef+'d)'; estadoCol='#f59e0b';
+      }
+    } else {
+      var sd=dirRuta(sigViaje.ori,sigViaje.des);
+      if(sd==='BAJA'){
+        estado='RETORNO'; estadoLabel='✓ Volvió a costa (Tractocar)'; estadoCol='#4ade80';
+      } else {
+        estado='INTERIOR'; estadoLabel='↔ Siguiente interior'; estadoCol='#64748b';
+      }
+    }
   } else {
-    estado='FUGA'; estadoLabel='✗ Fuga (subió con otro)'; estadoCol='#ef4444';
+    // Ruta interior → interior
+    if(!sigViaje){
+      var hoy3=new Date(); hoy3.setHours(0,0,0,0);
+      diasRef=Math.max(0,Math.floor((hoy3-new Date(lastTrip.f+'T00:00:00'))/86400000));
+      if(diasRef>5){
+        estado='PROBABLE_FUGA'; estadoLabel='⚠️ Sin nuevo viaje ('+diasRef+'d)'; estadoCol='#f97316';
+      } else {
+        estado='PENDIENTE'; estadoLabel='⏳ En ruta ('+diasRef+'d)'; estadoCol='#f59e0b';
+      }
+    } else {
+      estado='INTERIOR'; estadoLabel='↔ Ruta interior'; estadoCol='#64748b';
+    }
   }
 
   return {
     placa:placa,
-    lastBaja:lastBaja,
+    lastBaja:lastTrip,
     sigViaje:sigViaje,
     estado:estado,
     estadoLabel:estadoLabel,
     estadoCol:estadoCol,
-    clienteBaja:lastBaja.cod,
+    clienteBaja:lastTrip.cod,
     clienteSig:sigViaje?sigViaje.cod:null,
-    diasEnCosta:diasEnCosta,
+    diasEnCosta:diasRef,
   };
 }
 
@@ -3000,11 +2984,11 @@ function buildFlota(){
       '</div>';
   }
   document.getElementById('flotaKpi').innerHTML=
-    kpiBox('PLACAS BAJARON A COSTA',nBaja,'viajes con Tractocar','#60a5fa')+
-    kpiBox('RETORNARON CON TRACTOCAR',nRetorno,pctRet+'% de las bajadas','#4ade80')+
-    kpiBox('FUGA CONFIRMADA',nFuga,Math.round(nFuga/nBaja*100||0)+'% de las bajadas','#ef4444')+
-    kpiBox('PROBABLE FUGA (+5d)',nProbFuga,Math.round(nProbFuga/nBaja*100||0)+'% sin retorno','#f97316')+
-    kpiBox('AÚN EN COSTA (reciente)',nPend,'menos de 5 días','#f59e0b');
+    kpiBox('PLACAS EN SEGUIMIENTO',nBaja,'viajes con Tractocar','#60a5fa')+
+    kpiBox('RETORNO TRACTOCAR',nRetorno,pctRet+'% del total','#4ade80')+
+    kpiBox('FUGA CONFIRMADA',nFuga,Math.round(nFuga/nBaja*100||0)+'% del total','#ef4444')+
+    kpiBox('PROBABLE FUGA (+5d)',nProbFuga,Math.round(nProbFuga/nBaja*100||0)+'% sin nuevo viaje','#f97316')+
+    kpiBox('PENDIENTE (<5d)',nPend,'sin nuevo viaje registrado','#f59e0b');
 
   // Resumen por cliente del viaje de BAJADA
   buildResumenClientes(todas);
@@ -3063,7 +3047,7 @@ function buildFlota(){
     thSort('placa','PLACA','left')+
     thSort('bajadas','# BAJ.','center')+
     thSort('pctRet','% RET.','center')+
-    thSort('ruta','ÚLTIMO VIAJE BAJADA','left')+
+    thSort('ruta','ÚLTIMO VIAJE (filtro)','left')+
     thSort('clienteBaja','CLIENTE BAJADA','center')+
     thSort('fechaBaja','FECHA BAJADA','center')+
     thSort('rutaSig','SIGUIENTE VIAJE EN DATOS','left')+
