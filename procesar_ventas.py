@@ -3046,12 +3046,21 @@ function buildFlota(){
   filas.forEach(function(f){
     var s=stats[f.placa]||{};
     var sc=0;
+    // Estado actual
     if(f.estado==='FUGA') sc+=40;
-    else if(f.estado==='PROBABLE_FUGA') sc+=25+Math.min(f.diasEnCosta,20);
     else if(f.estado==='PENDIENTE') sc+=5;
+    // Historial de retorno
     var nb=s.nb||0, nr=s.nr||0;
-    if(nb>0){ var pr=nr/nb; if(pr<0.3) sc+=20; else if(pr<0.6) sc+=10; }
-    if((s.vt||0)>vtMedian) sc+=15;
+    if(nb>=3){
+      var pr=nr/nb;
+      if(pr===0)       sc+=35; // nunca ha retornado con Tractocar
+      else if(pr<0.3)  sc+=20; // retorna muy poco
+      else if(pr<0.6)  sc+=10; // retorna a medias
+    } else if(nb>0 && nr===0){
+      sc+=15; // pocas bajadas pero ningún retorno
+    }
+    // Valor económico
+    if((s.vt||0)>vtMedian) sc+=10;
     f._score=sc; f._stats=s;
   });
 
@@ -3126,9 +3135,12 @@ function buildFlota(){
 
 /* Devuelve badge de prioridad según score */
 function prioTag(sc){
-  if(sc>=50) return '<span style="background:#ef444422;color:#ef4444;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🔴 CRÍTICA</span>';
-  if(sc>=30) return '<span style="background:#f9731622;color:#f97316;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟠 ATENCIÓN</span>';
-  if(sc>=15) return '<span style="background:#f59e0b22;color:#f59e0b;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟡 MONITOREAR</span>';
+  // CRÍTICA: en fuga + historial malo, o nunca ha retornado y sigue en costa
+  if(sc>=45) return '<span style="background:#ef444422;color:#ef4444;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🔴 CRÍTICA</span>';
+  // ATENCIÓN: historial muy bajo o en fuga con algo de historial
+  if(sc>=25) return '<span style="background:#f9731622;color:#f97316;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟠 ATENCIÓN</span>';
+  // MONITOREAR: retorno bajo o valor alto, pero no crítico
+  if(sc>=10) return '<span style="background:#f59e0b22;color:#f59e0b;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟡 MONITOREAR</span>';
   return '<span style="background:#4ade8022;color:#4ade80;font-weight:800;font-size:.65rem;border-radius:4px;padding:2px 7px">🟢 OK</span>';
 }
 
