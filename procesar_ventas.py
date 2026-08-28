@@ -1218,10 +1218,9 @@ body.light #diasLabel{color:#3a5a72!important}
       <select id="flotaEstadoSel" onchange="buildFlota()"
         style="background:#0d1a26;border:1px solid #1e3a4e;color:#e2e8f0;font-size:.73rem;padding:4px 8px;border-radius:4px;cursor:pointer">
         <option value="">Todos</option>
-        <option value="FUGA">Fuga confirmada</option>
-        <option value="PROBABLE_FUGA">Probable fuga (+5d)</option>
+        <option value="FUGA">Fuga otra transportadora</option>
+        <option value="PENDIENTE">En destino (&lt;5 días)</option>
         <option value="RETORNO">Retorno Tractocar</option>
-        <option value="PENDIENTE">En Costa (reciente)</option>
         <option value="INTERIOR">Ruta interior</option>
       </select>
     </div>
@@ -2894,48 +2893,53 @@ function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
   var dir=dirRuta(lastTrip.ori,lastTrip.des);
   var estado,estadoLabel,estadoCol,diasRef=0;
 
+  // Región destino del último viaje (extraída del corredor pre-calculado)
+  var corParts=(lastTrip.co||'').split(' - ');
+  var regionDes=corParts[1]||lastTrip.des||'interior';
+
+  // Región origen (para SUBE: dónde estaba antes)
+  var regionOri=corParts[0]||lastTrip.ori||'';
+
+  // Días sin nuevo viaje (calculado una vez)
+  var hoyF=new Date(); hoyF.setHours(0,0,0,0);
+  diasRef=Math.max(0,Math.floor((hoyF-new Date(lastTrip.f+'T00:00:00'))/86400000));
+
   if(dir==='BAJA'){
-    // Último viaje bajó a la costa — ¿retornó con Tractocar?
+    // Bajó a la costa — ¿retornó con Tractocar?
     if(!sigViaje){
-      var hoy=new Date(); hoy.setHours(0,0,0,0);
-      diasRef=Math.max(0,Math.floor((hoy-new Date(lastTrip.f+'T00:00:00'))/86400000));
       if(diasRef>5){
-        estado='PROBABLE_FUGA'; estadoLabel='⚠️ Prob. Fuga ('+diasRef+'d en costa)'; estadoCol='#f97316';
+        estado='FUGA'; estadoLabel='✗ Fuga otra transp. ('+diasRef+'d en '+regionDes+')'; estadoCol='#ef4444';
       } else {
-        estado='PENDIENTE'; estadoLabel='⏳ En Costa ('+diasRef+'d)'; estadoCol='#f59e0b';
+        estado='PENDIENTE'; estadoLabel='⏳ En '+regionDes+' ('+diasRef+'d)'; estadoCol='#f59e0b';
       }
     } else if(esCosta(sigViaje.ori)){
       estado='RETORNO'; estadoLabel='✓ Retornó (Tractocar)'; estadoCol='#4ade80';
     } else {
-      estado='FUGA'; estadoLabel='✗ Fuga (subió con otro)'; estadoCol='#ef4444';
+      estado='FUGA'; estadoLabel='✗ Fuga otra transp.'; estadoCol='#ef4444';
     }
   } else if(dir==='SUBE'||dir==='SALE_COSTA'){
-    // Último viaje salió de la costa al interior — ¿hizo el siguiente viaje?
+    // Salió de la costa al interior — ¿hizo siguiente viaje?
     if(!sigViaje){
-      var hoy2=new Date(); hoy2.setHours(0,0,0,0);
-      diasRef=Math.max(0,Math.floor((hoy2-new Date(lastTrip.f+'T00:00:00'))/86400000));
       if(diasRef>5){
-        estado='PROBABLE_FUGA'; estadoLabel='⚠️ Sin nuevo viaje ('+diasRef+'d)'; estadoCol='#f97316';
+        estado='FUGA'; estadoLabel='✗ Fuga otra transp. ('+diasRef+'d en '+regionDes+')'; estadoCol='#ef4444';
       } else {
-        estado='PENDIENTE'; estadoLabel='⏳ En interior ('+diasRef+'d)'; estadoCol='#f59e0b';
+        estado='PENDIENTE'; estadoLabel='⏳ En '+regionDes+' ('+diasRef+'d)'; estadoCol='#f59e0b';
       }
     } else {
       var sd=dirRuta(sigViaje.ori,sigViaje.des);
       if(sd==='BAJA'){
         estado='RETORNO'; estadoLabel='✓ Volvió a costa (Tractocar)'; estadoCol='#4ade80';
       } else {
-        estado='INTERIOR'; estadoLabel='↔ Siguiente interior'; estadoCol='#64748b';
+        estado='INTERIOR'; estadoLabel='↔ Siguiente en '+regionDes; estadoCol='#64748b';
       }
     }
   } else {
     // Ruta interior → interior
     if(!sigViaje){
-      var hoy3=new Date(); hoy3.setHours(0,0,0,0);
-      diasRef=Math.max(0,Math.floor((hoy3-new Date(lastTrip.f+'T00:00:00'))/86400000));
       if(diasRef>5){
-        estado='PROBABLE_FUGA'; estadoLabel='⚠️ Sin nuevo viaje ('+diasRef+'d)'; estadoCol='#f97316';
+        estado='FUGA'; estadoLabel='✗ Fuga otra transp. ('+diasRef+'d en '+regionDes+')'; estadoCol='#ef4444';
       } else {
-        estado='PENDIENTE'; estadoLabel='⏳ En ruta ('+diasRef+'d)'; estadoCol='#f59e0b';
+        estado='PENDIENTE'; estadoLabel='⏳ En '+regionDes+' ('+diasRef+'d)'; estadoCol='#f59e0b';
       }
     } else {
       estado='INTERIOR'; estadoLabel='↔ Ruta interior'; estadoCol='#64748b';
@@ -2970,10 +2974,9 @@ function buildFlota(){
   var nBaja=todas.length;
   var nRetorno=todas.filter(function(f){return f.estado==='RETORNO';}).length;
   var nFuga=todas.filter(function(f){return f.estado==='FUGA';}).length;
-  var nProbFuga=todas.filter(function(f){return f.estado==='PROBABLE_FUGA';}).length;
   var nPend=todas.filter(function(f){return f.estado==='PENDIENTE';}).length;
-  var nFugaTotal=nFuga+nProbFuga;
-  var pctFuga=nBaja>0?Math.round(nFugaTotal/nBaja*100):0;
+  var nInterior=todas.filter(function(f){return f.estado==='INTERIOR';}).length;
+  var pctFuga=nBaja>0?Math.round(nFuga/nBaja*100):0;
   var pctRet=nBaja>0?Math.round(nRetorno/nBaja*100):0;
 
   function kpiBox(lbl,val,sub,col){
@@ -2986,9 +2989,9 @@ function buildFlota(){
   document.getElementById('flotaKpi').innerHTML=
     kpiBox('PLACAS EN SEGUIMIENTO',nBaja,'viajes con Tractocar','#60a5fa')+
     kpiBox('RETORNO TRACTOCAR',nRetorno,pctRet+'% del total','#4ade80')+
-    kpiBox('FUGA CONFIRMADA',nFuga,Math.round(nFuga/nBaja*100||0)+'% del total','#ef4444')+
-    kpiBox('PROBABLE FUGA (+5d)',nProbFuga,Math.round(nProbFuga/nBaja*100||0)+'% sin nuevo viaje','#f97316')+
-    kpiBox('PENDIENTE (<5d)',nPend,'sin nuevo viaje registrado','#f59e0b');
+    kpiBox('FUGA OTRA TRANSP.',nFuga,pctFuga+'% del total','#ef4444')+
+    kpiBox('EN DESTINO <5 DÍAS',nPend,'pendiente nuevo viaje','#f59e0b')+
+    kpiBox('RUTA INTERIOR',nInterior,'siguiente viaje interior','#64748b');
 
   // Resumen por cliente del viaje de BAJADA
   buildResumenClientes(todas);
@@ -2999,7 +3002,7 @@ function buildFlota(){
   });
 
   // Sort dinámico por columna
-  var ORD_EST={FUGA:0,PROBABLE_FUGA:1,PENDIENTE:2,RETORNO:3,INTERIOR:4};
+  var ORD_EST={FUGA:0,PENDIENTE:1,RETORNO:2,INTERIOR:3};
   filas.sort(function(a,b){
     var d=flotaSortDir, v=0;
     var sA=a._stats||{}, sB=b._stats||{};
