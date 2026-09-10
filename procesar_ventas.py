@@ -835,10 +835,12 @@ header .sub{font-size:.75rem;color:#64748b;margin-top:2px}
 
 /* TABLA */
 .container{padding:14px 10px;overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:1500px;font-size:.83rem}
-thead th{background:#0c2d3f;color:#94a3b8;font-weight:600;text-align:right;padding:7px 8px;border-bottom:2px solid #1e3a4a;white-space:nowrap;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none}
+table{width:100%;border-collapse:collapse;min-width:1500px;font-size:.83rem;table-layout:fixed}
+thead th{background:#0c2d3f;color:#94a3b8;font-weight:600;text-align:right;padding:7px 8px;border-bottom:2px solid #1e3a4a;white-space:nowrap;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;overflow:hidden;position:relative}
 thead th:first-child{text-align:left}
 thead th:hover{background:#0d3547;color:#e2e8f0}
+.col-rh{position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:3;background:transparent}
+.col-rh:hover,.col-rh.dragging{background:rgba(96,165,250,.5)}
 thead th.sort-asc::after{content:' \25B2';color:#f97316;font-size:.68em}
 thead th.sort-desc::after{content:' \25BC';color:#f97316;font-size:.68em}
 tbody tr{border-bottom:1px solid #1a2533;transition:background .12s}
@@ -1843,9 +1845,42 @@ function initTheme(){
   }
 }
 
+function initColResize(){
+  var table=document.querySelector('#viewTabla table');
+  if(!table) return;
+  var ths=table.querySelectorAll('thead th');
+  // Fijar anchos actuales para que table-layout:fixed funcione
+  ths.forEach(function(th){ th.style.width=th.offsetWidth+'px'; });
+  ths.forEach(function(th){
+    var handle=document.createElement('div');
+    handle.className='col-rh';
+    th.appendChild(handle);
+    var startX,startW;
+    handle.addEventListener('mousedown',function(e){
+      e.stopPropagation(); e.preventDefault();
+      startX=e.pageX; startW=th.offsetWidth;
+      handle.classList.add('dragging');
+      document.body.style.cursor='col-resize';
+      function onMove(e){
+        var w=Math.max(50,startW+(e.pageX-startX));
+        th.style.width=w+'px';
+      }
+      function onUp(){
+        handle.classList.remove('dragging');
+        document.body.style.cursor='';
+        document.removeEventListener('mousemove',onMove);
+        document.removeEventListener('mouseup',onUp);
+      }
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded',function(){
   initTheme();
   initGlobalFilters();
+  initColResize();
   document.querySelectorAll('.ops-th').forEach(function(th){
     th.addEventListener('click',function(){
       var k=th.getAttribute('data-ok');
