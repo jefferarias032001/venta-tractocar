@@ -1093,7 +1093,7 @@ body.light #diasLabel{color:#3a5a72!important}
         <th data-k="DIF_DIAS">EJ. vs M. ANT.</th>
         <th data-k="VENTA_AYER" id="thAyer">VENTA AYER</th>
         <th data-k="VENTA_HOY"  id="thHoy">VENTA HOY</th>
-        <th data-k="META_VENTA_FINAL">META VENTA FINAL</th>
+        <th data-k="META_VENTA_FINAL">META/DÍA</th>
         <th data-k="META_UTIL">META UTILIDAD</th>
         <th data-k="UTILIDAD">UTILIDAD</th>
         <th data-k="PROY_UTILIDAD">PROY. UTILIDAD</th>
@@ -1352,13 +1352,17 @@ function calcFila(cod){
 
   var diasRango = d2 - d1 + 1;
   var diasMes   = m.diasMes || 31;
+  var diaHoy    = m.diaActual || d2;
   var PROY  = diasRango > 0 ? V / diasRango * diasMes : 0;
   var DIF_PP = PROY - (pp.PPTO||0);
   var PCT_C  = pp.PPTO > 0 ? PROY / pp.PPTO : 0;
   var DIF_D  = V - maRng;
   var MAR    = V > 0 ? U / V : 0;
   var PROY_U = PROY * MAR;
-  var META_V = Math.max((pp.PPTO||0) - V, 0);
+  // META VENTA FINAL = (Presupuesto - Ejecutado) / días restantes del mes
+  var falta   = Math.max((pp.PPTO||0) - V, 0);
+  var diasRest = Math.max(diasMes - diaHoy, 0);
+  var META_V  = diasRest > 0 ? falta / diasRest : falta;
 
   return {
     Cod: cod,
@@ -1429,8 +1433,13 @@ function buildTable(){
   rows.forEach(function(r){ tbody.appendChild(renderRow(r,'')); });
 
   // Fila OTROS CLIENTES (expandable)
+  // Días restantes del mes (compartido por OTROS y TOTAL)
+  var _meta = window.META||{};
+  var _diasRest = Math.max((_meta.diasMes||31) - (_meta.diaActual||_meta.diasMes||31), 0);
+
   var otros = window.OTROS;
   if(otros){
+    var otrosMeta = _diasRest > 0 ? otros.PPTO / _diasRest : otros.PPTO;
     var or = {
       Cod: '<span onclick="toggleOtros()" style="cursor:pointer;user-select:none" title="Ver clientes"><span id="otrosArrow" style="margin-right:4px">&#9654;</span>OTROS CLIENTES ('+otros.n+')</span>',
       PPTO: otros.PPTO, META_UTIL: otros.META_UTIL, M_VIAJES: otros.M_VIAJES,
@@ -1438,7 +1447,7 @@ function buildTable(){
       VENTA_AYER:0, VENTA_HOY:0, PROYECCION:0,
       DIF_PROV_PPTO: -otros.PPTO, PCT_CUMPL:0, DIF_DIAS:0,
       PROY_UTILIDAD:0, PCT_INTER:0, PCT_INTER_M:0,
-      META_VENTA_FINAL: otros.PPTO, P_PLANILLAR: otros.P_PLANILLAR||0,
+      META_VENTA_FINAL: otrosMeta, P_PLANILLAR: otros.P_PLANILLAR||0,
     };
     var orTr=renderRow(or,'otros-row');
     tbody.appendChild(orTr);
@@ -1464,7 +1473,7 @@ function buildTable(){
     totAY+=r.VENTA_AYER; totHY+=r.VENTA_HOY; totMB+=r.META_VENTA_FINAL;
     totMA+=r.VENTA_MES_ANT; totPL+=r.P_PLANILLAR; totV0+=r.VIAJES; totMU+=r.META_UTIL;
   });
-  if(otros){totPP+=otros.PPTO; totMB+=otros.PPTO; totMU+=otros.META_UTIL;}
+  if(otros){totPP+=otros.PPTO; totMB+=otrosMeta; totMU+=otros.META_UTIL;}
   var totR={
     Cod:'TOTAL', PPTO:totPP, PROYECCION:totPRY,
     DIF_PROV_PPTO:totPRY-totPP, PCT_CUMPL:totPP>0?totPRY/totPP:0,
