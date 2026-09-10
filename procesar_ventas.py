@@ -835,7 +835,7 @@ header .sub{font-size:.75rem;color:#64748b;margin-top:2px}
 
 /* TABLA */
 .container{padding:14px 10px;overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:1700px;font-size:.77rem}
+table{width:100%;border-collapse:collapse;min-width:1500px;font-size:.83rem}
 thead th{background:#0c2d3f;color:#94a3b8;font-weight:600;text-align:right;padding:7px 8px;border-bottom:2px solid #1e3a4a;white-space:nowrap;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none}
 thead th:first-child{text-align:left}
 thead th:hover{background:#0d3547;color:#e2e8f0}
@@ -1091,8 +1091,6 @@ body.light #diasLabel{color:#3a5a72!important}
         <th data-k="EJECUTADO">EJECUTADO</th>
         <th data-k="VENTA_MES_ANT">M. ANT. (mismo rango)</th>
         <th data-k="DIF_DIAS">EJ. vs M. ANT.</th>
-        <th data-k="VIAJES">VIAJES</th>
-        <th data-k="M_VIAJES">M. VIAJES</th>
         <th data-k="VENTA_AYER" id="thAyer">VENTA AYER</th>
         <th data-k="VENTA_HOY"  id="thHoy">VENTA HOY</th>
         <th data-k="META_VENTA_FINAL">META VENTA FINAL</th>
@@ -1392,8 +1390,6 @@ function renderRow(r, cls){
     '<td>'+mn(r.EJECUTADO)+'</td>'+
     '<td>'+mn(r.VENTA_MES_ANT)+'</td>'+
     '<td>'+arr(r.DIF_DIAS)+'</td>'+
-    '<td>'+nnum(r.VIAJES)+'</td>'+
-    '<td>'+nnum(r.M_VIAJES)+'</td>'+
     '<td>'+mn(r.VENTA_AYER)+'</td>'+
     '<td>'+mn(r.VENTA_HOY)+'</td>'+
     '<td>'+mn(r.META_VENTA_FINAL)+'</td>'+
@@ -1411,7 +1407,7 @@ function buildTable(){
   var OPS_SIN_TABLA = {'CEDIS':1,'COMEX':1,'JEMA':1};
   var tbody = document.getElementById('tbody');
   if(OPS_SIN_TABLA[curOp]){
-    tbody.innerHTML='<tr><td colspan="19" style="text-align:center;padding:30px;color:#445566;font-size:.8rem">'+
+    tbody.innerHTML='<tr><td colspan="17" style="text-align:center;padding:30px;color:#445566;font-size:.8rem">'+
       '&#8593; Ver tarjeta de operación arriba para los datos de <b style="color:#94a3b8">'+curOp+'</b></td></tr>';
     document.getElementById('metaBar').innerHTML='';
     return;
@@ -1456,7 +1452,7 @@ function buildTable(){
       dtr.innerHTML=
         '<td style="padding:4px 8px 4px 32px;text-align:left;color:#7aa8cc">&#9492; '+c.cod+'</td>'+
         '<td style="padding:4px 8px;color:#445566">'+pf.val+pf.unit+'</td>'+
-        '<td colspan="17" style="padding:4px 8px;color:#56789a">'+ef.val+ef.unit+'</td>';
+        '<td colspan="15" style="padding:4px 8px;color:#56789a">'+ef.val+ef.unit+'</td>';
       tbody.appendChild(dtr);
     });
   }
@@ -1595,7 +1591,7 @@ function selAll(v){
 
 function descargarCSV(){
   var cols=['Cod','PPTO','PROYECCION','DIF_PROV_PPTO','PCT_CUMPL','EJECUTADO','VENTA_MES_ANT',
-            'DIF_DIAS','VIAJES','M_VIAJES','VENTA_AYER','VENTA_HOY','META_VENTA_FINAL',
+            'DIF_DIAS','VENTA_AYER','VENTA_HOY','META_VENTA_FINAL',
             'META_UTIL','UTILIDAD','PROY_UTILIDAD','PCT_INTER','PCT_INTER_M','P_PLANILLAR'];
   var rows=[cols.join(';')];
   var clientes=(window.CLIENTES||[]).filter(function(c){return !excluidos.has(c);});
