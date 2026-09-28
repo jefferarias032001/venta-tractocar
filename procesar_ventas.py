@@ -747,14 +747,20 @@ def main():
             r"\Archivos de Data Quality Analyst Tractocar - Analisis Operacion y Venta"
         )
         ruta_man_xls = os.path.join(RUTA_ANALISIS, "10. INFORMACION DE MANIFIESTOS.xlsx")
-        man_export = (
-            u_nac[["Manifiesto", "Fecha", "Cod", "CuentaContable", "Tipologia"]]
-            .drop_duplicates(subset=["Manifiesto"])
-            .copy()
-        )
-        man_export.columns = ["ENVIO (MANIFIESTO)", "FECHA DE CREACION", "COD CLIENTE", "CUENTA CONTABLE", "TIPOLOGIA"]
-        man_export["ENVIO (MANIFIESTO)"] = man_export["ENVIO (MANIFIESTO)"].str.replace(r"^TCL\.", "", regex=True)
-        man_export["FECHA DE CREACION"] = pd.to_datetime(man_export["FECHA DE CREACION"]).dt.date
+        _cols_ajov = ["Manifiesto", "Fecha", "Cod", "_CodOrig", "CuentaContable", "Tipologia", "Origen", "Destino", "Ciudad"]
+        _cols_ajov = [c for c in _cols_ajov if c in u_nac.columns]
+        man_export = u_nac[_cols_ajov].drop_duplicates(subset=["Manifiesto"]).copy()
+        # OPERACION AJOVER antes de renombrar (clasificar_ajov_row necesita nombres originales)
+        man_export["OPERACION AJOVER"] = ""
+        _mask_ajov = man_export["_CodOrig"].isin(["AJOV", "NOCO"])
+        if _mask_ajov.any():
+            _ajov_sub = man_export[_mask_ajov].copy()
+            _ajov_sub["Cod"] = _ajov_sub["_CodOrig"]
+            man_export.loc[_mask_ajov, "OPERACION AJOVER"] = _ajov_sub.apply(clasificar_ajov_row, axis=1).values
+        man_export["ENVIO (MANIFIESTO)"] = "M" + man_export["Manifiesto"].astype(str).str.replace(r"^TCL\.", "", regex=True)
+        man_export["FECHA DE CREACION"] = pd.to_datetime(man_export["Fecha"], errors="coerce").dt.date
+        man_export = man_export.rename(columns={"Cod": "COD CLIENTE", "CuentaContable": "CUENTA CONTABLE", "Tipologia": "TIPOLOGIA"})
+        man_export = man_export[["ENVIO (MANIFIESTO)", "FECHA DE CREACION", "COD CLIENTE", "CUENTA CONTABLE", "TIPOLOGIA", "OPERACION AJOVER"]]
         from openpyxl import load_workbook
         from openpyxl.utils import get_column_letter
         man_export.to_excel(ruta_man_xls, index=False)
@@ -1461,12 +1467,14 @@ function calcFilaGajov(cod){
   });
   var diasConDatos=Math.max(1,Math.min(d2,diaHoy)-d1+1);
   var PROY=diasConDatos>0?V/diasConDatos*diasMes:0;
+  var MAR=V>0?U/V:0;
   return {
     Cod:cod, label:(window.GAJOV_LABELS||{})[cod]||cod,
     EJECUTADO:V, UTILIDAD:U, VIAJES:N, VENTA_MES_ANT:maRng,
     PROYECCION:PROY, DIF_DIAS:V-maRng,
     VENTA_AYER:(window.FIJO_AYER_GAJOV||{})[cod]||0,
     VENTA_HOY:(window.FIJO_HOY_GAJOV||{})[cod]||0,
+    PROY_UTILIDAD:PROY*MAR, PCT_INTER:MAR,
   };
 }
 var _gajovOpen=false;
@@ -1547,7 +1555,13 @@ function buildTable(){
           '<td>'+arr(f.DIF_DIAS)+'</td>'+
           '<td style="color:#56789a">'+mn(f.VENTA_AYER)+'</td>'+
           '<td style="color:#56789a">'+mn(f.VENTA_HOY)+'</td>'+
-          '<td colspan="7"></td>';
+          '<td></td>'+
+          '<td></td>'+
+          '<td style="color:#56789a">'+mn(f.UTILIDAD)+'</td>'+
+          '<td style="color:#56789a">'+mn(f.PROY_UTILIDAD)+'</td>'+
+          '<td>'+pct(f.PCT_INTER)+'</td>'+
+          '<td></td>'+
+          '<td></td>';
         tbody.appendChild(dtr);
       });
     }
