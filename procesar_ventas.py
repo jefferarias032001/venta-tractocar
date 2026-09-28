@@ -324,6 +324,8 @@ def main():
             (sol["OB_NOTES_CANCEL_USER"] == "-") &
             (_status.isna() | (_status == "TCL.ENROUTE_NOT STARTED"))
         ].copy()
+        filtrado = filtrado.copy()
+        filtrado["OB_CUSTOMER_CODE"] = filtrado["OB_CUSTOMER_CODE"].replace(COD_ALIAS)
         pendiente = (filtrado
                      .groupby("OB_CUSTOMER_CODE")
                      .agg(P_PLANILLAR=("OB_RATE_RECEIVABLE","sum"),
