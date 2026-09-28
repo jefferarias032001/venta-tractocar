@@ -34,6 +34,7 @@ RUTA_UNIFICADO = r"C:\Users\jarias\Desktop\tractocar-ventas\TRACTOCAR_UNIFICADO.
 RUTA_PPTO = (
     r"C:\Users\jarias\OneDrive - TRACTOCAR LOGISTICS SAS"
     r"\Archivos de Data Quality Analyst Tractocar - Analisis Operacion y Venta"
+    r"\Meta mensuales"
     r"\Analisis de Margen y Venta - Proy Julio 2026 - jeffer.xlsx"
 )
 HOJA_PPTO = "PLANTILLA2"
@@ -318,9 +319,10 @@ def main():
         hrow_sol = buscar_header_row_ob(tmp_sol, "Sheet1")
         sol = pd.read_excel(tmp_sol, sheet_name="Sheet1", header=hrow_sol)
         sol.columns = [str(c).strip() for c in sol.columns]
+        _status = sol["SHIP_STATUS_ENROUTE"]
         filtrado = sol[
             (sol["OB_NOTES_CANCEL_USER"] == "-") &
-            (sol["SHIP_STATUS_ENROUTE"].isna())
+            (_status.isna() | (_status == "TCL.ENROUTE_NOT STARTED"))
         ].copy()
         pendiente = (filtrado
                      .groupby("OB_CUSTOMER_CODE")
@@ -691,6 +693,7 @@ def main():
         f"window.AJOV_RUTAS={json.dumps(ajov_rutas_dict, ensure_ascii=False)};"
         f"window.FLOTA={json.dumps(flota_dict, ensure_ascii=False)};"
         f"window.FLOTA_STATS={json.dumps(flota_stats, ensure_ascii=False)};"
+        f"window.PLACAS_PODEROSAS=new Set({json.dumps(['QPO046','QPO797','LQO629','LGL462'], ensure_ascii=False)});"
         f"window.FLOTA_CLIENTES={json.dumps(flota_clientes, ensure_ascii=False)};"
         f"window.FLOTA_CORREDORES={json.dumps(flota_corredores, ensure_ascii=False)};"
         f"window.FLOTA_TIPOLOGIAS={json.dumps(flota_tipologias, ensure_ascii=False)};"
@@ -712,6 +715,35 @@ def main():
 
     print(f"\n  HTML -> {ruta_html}")
     print(f"  HTML -> {ruta_index}  (Netlify)")
+
+    # ---- EXPORT: 10. INFORMACION DE MANIFIESTOS ----
+    try:
+        RUTA_ANALISIS = (
+            r"C:\Users\jarias\OneDrive - TRACTOCAR LOGISTICS SAS"
+            r"\Archivos de Data Quality Analyst Tractocar - Analisis Operacion y Venta"
+        )
+        ruta_man_xls = os.path.join(RUTA_ANALISIS, "10. INFORMACION DE MANIFIESTOS.xlsx")
+        man_export = (
+            u_nac[["Manifiesto", "Fecha", "Cod", "CuentaContable", "Tipologia"]]
+            .drop_duplicates(subset=["Manifiesto"])
+            .copy()
+        )
+        man_export.columns = ["ENVIO (MANIFIESTO)", "FECHA DE CREACION", "COD CLIENTE", "CUENTA CONTABLE", "TIPOLOGIA"]
+        man_export["ENVIO (MANIFIESTO)"] = man_export["ENVIO (MANIFIESTO)"].str.replace(r"^TCL\.", "", regex=True)
+        man_export["FECHA DE CREACION"] = pd.to_datetime(man_export["FECHA DE CREACION"]).dt.date
+        from openpyxl import load_workbook
+        from openpyxl.utils import get_column_letter
+        man_export.to_excel(ruta_man_xls, index=False)
+        wb = load_workbook(ruta_man_xls)
+        ws = wb.active
+        for col in ws.columns:
+            max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
+        wb.save(ruta_man_xls)
+        print(f"  EXCEL -> {ruta_man_xls}  ({len(man_export):,} manifiestos)")
+    except Exception as _xls_err:
+        print(f"  [aviso] No se pudo guardar Excel manifiestos: {_xls_err}")
+
     import webbrowser
     try:
         webbrowser.open("file://" + ruta_html.replace(os.sep, "/"))
@@ -1244,6 +1276,7 @@ body.light #diasLabel{color:#3a5a72!important}
         <option value="PENDIENTE">En destino (3-5 días)</option>
         <option value="RETORNO">Retorno Tractocar</option>
         <option value="INTERIOR">Ruta interior</option>
+        <option value="PODEROSA">⭐ Poderosas</option>
       </select>
     </div>
     <div style="display:flex;align-items:center;gap:6px">
@@ -1352,10 +1385,11 @@ function calcFila(cod){
     for(var d=d1;d<=d2;d++){var e=sd[String(d)];if(e)maRng+=e[0];}
   });
 
-  var diasRango = d2 - d1 + 1;
-  var diasMes   = m.diasMes || 31;
-  var diaHoy    = m.diaActual || d2;
-  var PROY  = diasRango > 0 ? V / diasRango * diasMes : 0;
+  var diasRango    = d2 - d1 + 1;
+  var diasMes      = m.diasMes || 31;
+  var diaHoy       = m.diaActual || d2;
+  var diasConDatos = Math.max(1, Math.min(d2, diaHoy) - d1 + 1);
+  var PROY  = diasConDatos > 0 ? V / diasConDatos * diasMes : 0;
   var DIF_PP = PROY - (pp.PPTO||0);
   var PCT_C  = pp.PPTO > 0 ? PROY / pp.PPTO : 0;
   var DIF_D  = V - maRng;
@@ -1441,14 +1475,25 @@ function buildTable(){
 
   var otros = window.OTROS;
   if(otros){
-    var otrosMeta = _diasRest > 0 ? otros.PPTO / _diasRest : otros.PPTO;
+    // Sumar calcFila para cada cliente de OTROS (respeta filtro d1/d2 activo)
+    var _orEj=0,_orU=0,_orV=0,_orMA=0,_orPROY=0,_orAY=0,_orHY=0;
+    (otros.nombres||[]).forEach(function(c){
+      var f=calcFila(c); if(!f) return;
+      _orEj+=f.EJECUTADO; _orU+=f.UTILIDAD; _orV+=f.VIAJES;
+      _orMA+=f.VENTA_MES_ANT; _orPROY+=f.PROYECCION;
+      _orAY+=f.VENTA_AYER; _orHY+=f.VENTA_HOY;
+    });
+    var _orMAR = _orEj>0 ? _orU/_orEj : 0;
+    var falta_or = Math.max((otros.PPTO||0) - _orEj, 0);
+    var otrosMeta = _diasRest > 0 ? falta_or / _diasRest : falta_or;
     var or = {
       Cod: '<span onclick="toggleOtros()" style="cursor:pointer;user-select:none" title="Ver clientes"><span id="otrosArrow" style="margin-right:4px">&#9654;</span>OTROS CLIENTES ('+otros.n+')</span>',
       PPTO: otros.PPTO, META_UTIL: otros.META_UTIL, M_VIAJES: otros.M_VIAJES,
-      EJECUTADO:0, UTILIDAD:0, VIAJES:0, VENTA_MES_ANT:0,
-      VENTA_AYER:0, VENTA_HOY:0, PROYECCION:0,
-      DIF_PROV_PPTO: -otros.PPTO, PCT_CUMPL:0, DIF_DIAS:0,
-      PROY_UTILIDAD:0, PCT_INTER:0, PCT_INTER_M:0,
+      EJECUTADO:_orEj, UTILIDAD:_orU, VIAJES:_orV, VENTA_MES_ANT:_orMA,
+      VENTA_AYER:_orAY, VENTA_HOY:_orHY, PROYECCION:_orPROY,
+      DIF_PROV_PPTO: _orPROY-(otros.PPTO||0), PCT_CUMPL:otros.PPTO>0?_orPROY/otros.PPTO:0,
+      DIF_DIAS: _orEj-_orMA,
+      PROY_UTILIDAD: _orPROY*_orMAR, PCT_INTER:0, PCT_INTER_M:otros.PCT_INTER_M||0,
       META_VENTA_FINAL: otrosMeta, P_PLANILLAR: otros.P_PLANILLAR||0,
     };
     var orTr=renderRow(or,'otros-row');
@@ -1475,7 +1520,11 @@ function buildTable(){
     totAY+=r.VENTA_AYER; totHY+=r.VENTA_HOY; totMB+=r.META_VENTA_FINAL;
     totMA+=r.VENTA_MES_ANT; totPL+=r.P_PLANILLAR; totV0+=r.VIAJES; totMU+=r.META_UTIL;
   });
-  if(otros){totPP+=otros.PPTO; totMB+=otrosMeta; totMU+=otros.META_UTIL;}
+  if(otros){
+    totPP+=otros.PPTO; totMB+=otrosMeta; totMU+=otros.META_UTIL;
+    totV+=_orEj; totU+=_orU; totV0+=_orV; totMA+=_orMA;
+    totPRY+=_orPROY; totAY+=_orAY; totHY+=_orHY; totPL+=otros.P_PLANILLAR||0;
+  }
   var totR={
     Cod:'TOTAL', PPTO:totPP, PROYECCION:totPRY,
     DIF_PROV_PPTO:totPRY-totPP, PCT_CUMPL:totPP>0?totPRY/totPP:0,
@@ -3008,6 +3057,15 @@ function analizarPlaca(placa, refCod, mesFil, corFil, tipFil){
     return       {estado:'FUGA',     estadoLabel:'✗ Fuga otra transp. ('+dias+'d en '+region+')', estadoCol:'#ef4444'};
   }
 
+  // Placa especial: no retorna por contrato (PODEROSA)
+  if(window.PLACAS_PODEROSAS && window.PLACAS_PODEROSAS.has(placa)){
+    return {
+      placa:placa, lastBaja:lastTrip, sigViaje:sigViaje,
+      estado:'PODEROSA', estadoLabel:'⭐ Poderosa (sin retorno)', estadoCol:'#a855f7',
+      clienteBaja:lastTrip.cod, clienteSig:sigViaje?sigViaje.cod:null, diasEnCosta:diasRef,
+    };
+  }
+
   if(dir==='BAJA'){
     if(!sigViaje){
       var r=clasificarSinViaje(diasRef,regionDes);
@@ -3070,6 +3128,7 @@ function buildFlota(){
   var nPend=todas.filter(function(f){return f.estado==='PENDIENTE';}).length;
   var nEnRuta=todas.filter(function(f){return f.estado==='EN_RUTA';}).length;
   var nInterior=todas.filter(function(f){return f.estado==='INTERIOR';}).length;
+  var nPoderosa=todas.filter(function(f){return f.estado==='PODEROSA';}).length;
   var pctFuga=nBaja>0?Math.round(nFuga/nBaja*100):0;
   var pctRet=nBaja>0?Math.round(nRetorno/nBaja*100):0;
 
@@ -3086,7 +3145,8 @@ function buildFlota(){
     kpiBox('RETORNO TRACTOCAR',nRetorno,pctRet+'% del total','#4ade80')+
     kpiBox('FUGA OTRA TRANSP.',nFuga,pctFuga+'% del total','#ef4444')+
     kpiBox('EN DESTINO 3-5 DÍAS',nPend,'en espera nuevo viaje','#f59e0b')+
-    kpiBox('RUTA INTERIOR',nInterior,'siguiente viaje interior','#64748b');
+    kpiBox('RUTA INTERIOR',nInterior,'siguiente viaje interior','#64748b')+
+    (nPoderosa>0?kpiBox('⭐ PODEROSAS',nPoderosa,'sin retorno por contrato','#a855f7'):'');
 
   // Guardar 'todas' para que el panel use los mismos datos (1 placa = 1 entrada)
   window._flotaResultados=todas;
@@ -3111,6 +3171,7 @@ function buildFlota(){
   filas.forEach(function(f){
     var s=stats[f.placa]||{};
     var sc=0;
+    if(f.estado==='PODEROSA') { f._score=0; f._stats=s; return; }
     if(f.estado==='FUGA') sc+=40;
     else if(f.estado==='PENDIENTE') sc+=5;
     else if(f.estado==='EN_RUTA') sc+=0;
@@ -3128,7 +3189,7 @@ function buildFlota(){
   });
 
   // Sort dinámico por columna
-  var ORD_EST={FUGA:0,PENDIENTE:1,EN_RUTA:2,RETORNO:3,INTERIOR:4};
+  var ORD_EST={FUGA:0,PENDIENTE:1,EN_RUTA:2,RETORNO:3,INTERIOR:4,PODEROSA:5};
   filas.sort(function(a,b){
     var d=flotaSortDir, v=0;
     var sA=a._stats||{}, sB=b._stats||{};
