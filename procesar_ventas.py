@@ -502,7 +502,9 @@ def main():
         ruta = f"{ori}-{des}-{tip}"
 
         if cod == "NOCO":
-            return "TRANSFERENCIAS" if ruta in ("CARTAGENA-MADRID-PT", "MADRID-CARTAGENA-PT") else "OTROS NOCO"
+            if ruta == "CARTAGENA-MADRID-PT": return "Transferencia Ctg - Mad"
+            if ruta == "MADRID-CARTAGENA-PT": return "Transferencia Mad - Ctg"
+            return "OTROS NOCO"
 
         # AJOV — transferencias
         if ruta in ("CARTAGENA-MADRID-PT", "CARTAGENA-MADRID-SC"): return "Transferencia Ctg - Mad"
@@ -2732,7 +2734,7 @@ function buildAjover(){
              'Transferencia Ctg - Cali','SENCILLOS MADRID','ZORROS CALI',
              'TRANSFERENCIA ALAMO','FIJOS CALI','FIJOS MEDELLIN',
              'Ruta Cliente Mad','Ruta Cliente Ctg','ENTREGA A CLIENTES',
-             'TRANSFERENCIAS','OTROS NOCO'];
+             'OTROS NOCO'];
   tipos.sort(function(a,b){
     var ia=ORDER.indexOf(a)||99, ib=ORDER.indexOf(b)||99;
     if(ia<0)ia=99; if(ib<0)ib=99;
