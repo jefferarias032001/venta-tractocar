@@ -310,6 +310,24 @@ def main():
             int(grp["Manifiesto"].nunique()),
         ]
 
+    # ---- GRUPO AJOVER: datos diarios por sub-cliente (AJOV, NOCO, CASC) ----
+    GAJOV_LABELS = {"AJOV": "AJOVER DARNEL", "NOCO": "NOUVELLE COL.", "CASC": "CASCOS"}
+    gajov_act = m_act[m_act["_CodOrig"].isin(GRUPO_AJOV_CODS)].copy()
+    gajov_ant = m_ant[m_ant["_CodOrig"].isin(GRUPO_AJOV_CODS)].copy() if "_CodOrig" in m_ant.columns else pd.DataFrame()
+    gajov_daily, gajov_daily_ant = {}, {}
+    for (cod, subseg, dia), grp in gajov_act.groupby(["_CodOrig", "Subseg", "Dia"]):
+        gajov_daily.setdefault(cod, {}).setdefault(str(subseg), {})[str(int(dia))] = [
+            round(float(grp["AFacturar"].sum()), 0),
+            round(float(grp["Utilidad"].sum()), 0),
+            int(grp["Manifiesto"].nunique()),
+        ]
+    if not gajov_ant.empty and "Subseg" in gajov_ant.columns:
+        for (cod, subseg, dia), grp in gajov_ant.groupby(["_CodOrig", "Subseg", "Dia"]):
+            gajov_daily_ant.setdefault(cod, {}).setdefault(str(subseg), {})[str(int(dia))] = [
+                round(float(grp["AFacturar"].sum()), 0), 0, 0]
+    gajov_fijo_hoy = gajov_act[gajov_act["Dia"]==dia_hoy].groupby("_CodOrig")["AFacturar"].sum().to_dict() if dia_hoy else {}
+    gajov_fijo_ayer = gajov_act[gajov_act["Dia"]==dia_ayer].groupby("_CodOrig")["AFacturar"].sum().to_dict() if dia_ayer else {}
+
     # ---- 3. PENDIENTES POR PLANILLAR ----
     print(f"> Solicitudes: {os.path.basename(RUTA_SOLICITUDES)}")
     try:
@@ -681,6 +699,12 @@ def main():
         f"window.FIJO_HOY={json.dumps({k:float(v) for k,v in fijo_hoy.items()}, ensure_ascii=False)};"
         f"window.FIJO_AYER={json.dumps({k:float(v) for k,v in fijo_ayer.items()}, ensure_ascii=False)};"
         f"window.OTROS={json.dumps(otros_js, ensure_ascii=False)};"
+        f"window.DIARIO_GAJOV={json.dumps(gajov_daily, ensure_ascii=False)};"
+        f"window.DIARIO_ANT_GAJOV={json.dumps(gajov_daily_ant, ensure_ascii=False)};"
+        f"window.FIJO_HOY_GAJOV={json.dumps({k:float(v) for k,v in gajov_fijo_hoy.items()}, ensure_ascii=False)};"
+        f"window.FIJO_AYER_GAJOV={json.dumps({k:float(v) for k,v in gajov_fijo_ayer.items()}, ensure_ascii=False)};"
+        f"window.GAJOV_LABELS={json.dumps(GAJOV_LABELS, ensure_ascii=False)};"
+        f"window.GAJOV_CODS={json.dumps(sorted(GRUPO_AJOV_CODS), ensure_ascii=False)};"
         f"window.CLIENTES={json.dumps(clientes_activos, ensure_ascii=False)};"
         f"window.OPS_KPI={json.dumps(ops_kpi, ensure_ascii=False)};"
         f"window.OPS_DIARIO={json.dumps(ops_diario, ensure_ascii=False)};"
@@ -1418,6 +1442,43 @@ function calcFila(cod){
 var COD_LABEL = {'GRUPO_AJOV': 'GRUPO AJOVER'};
 function clientLabel(cod){ return COD_LABEL[cod] || cod; }
 
+function calcFilaGajov(cod){
+  var dias    = (window.DIARIO_GAJOV||{})[cod]||{};
+  var diasAnt = (window.DIARIO_ANT_GAJOV||{})[cod]||{};
+  var m       = window.META||{};
+  var diasMes = m.diasMes||31;
+  var diaHoy  = m.diaActual||d2;
+  var V=0,U=0,N=0,maRng=0;
+  var segs=curSeg==='TODOS'?Object.keys(dias):(dias[curSeg]?[curSeg]:[]);
+  segs.forEach(function(s){
+    var sd=dias[s]||{};
+    for(var d=d1;d<=d2;d++){var e=sd[String(d)];if(e){V+=e[0];U+=e[1];N+=e[2];}}
+  });
+  var segsAnt=curSeg==='TODOS'?Object.keys(diasAnt):(diasAnt[curSeg]?[curSeg]:[]);
+  segsAnt.forEach(function(s){
+    var sd=diasAnt[s]||{};
+    for(var d=d1;d<=d2;d++){var e=sd[String(d)];if(e)maRng+=e[0];}
+  });
+  var diasConDatos=Math.max(1,Math.min(d2,diaHoy)-d1+1);
+  var PROY=diasConDatos>0?V/diasConDatos*diasMes:0;
+  return {
+    Cod:cod, label:(window.GAJOV_LABELS||{})[cod]||cod,
+    EJECUTADO:V, UTILIDAD:U, VIAJES:N, VENTA_MES_ANT:maRng,
+    PROYECCION:PROY, DIF_DIAS:V-maRng,
+    VENTA_AYER:(window.FIJO_AYER_GAJOV||{})[cod]||0,
+    VENTA_HOY:(window.FIJO_HOY_GAJOV||{})[cod]||0,
+  };
+}
+var _gajovOpen=false;
+function toggleGajov(){
+  _gajovOpen=!_gajovOpen;
+  var arEl=document.getElementById('gajovArrow');
+  if(arEl) arEl.innerHTML=_gajovOpen?'&#9660;':'&#9654;';
+  document.querySelectorAll('.gajov-detail').forEach(function(tr){
+    tr.style.display=_gajovOpen?'':'none';
+  });
+}
+
 function renderRow(r, cls){
   var tr = document.createElement('tr');
   if(cls) tr.className = cls;
@@ -1466,7 +1527,31 @@ function buildTable(){
 
   var tbody = document.getElementById('tbody');
   tbody.innerHTML = '';
-  rows.forEach(function(r){ tbody.appendChild(renderRow(r,'')); });
+  rows.forEach(function(r){
+    var tr=renderRow(r,'');
+    tbody.appendChild(tr);
+    if(r.Cod==='GRUPO_AJOV'){
+      var td0=tr.querySelector('td');
+      td0.innerHTML='<span onclick="toggleGajov()" style="cursor:pointer;user-select:none" title="Ver detalle por cliente"><span id="gajovArrow" style="margin-right:4px">&#9654;</span>GRUPO AJOVER</span>';
+      (window.GAJOV_CODS||[]).forEach(function(cod){
+        var f=calcFilaGajov(cod);
+        var dtr=document.createElement('tr');
+        dtr.className='gajov-detail'; dtr.style.display='none';
+        dtr.innerHTML=
+          '<td style="padding:4px 8px 4px 32px;text-align:left;color:#7aa8cc">&#9492; '+f.label+'</td>'+
+          '<td style="color:#445566">-</td>'+
+          '<td style="color:#56789a">'+mn(f.PROYECCION)+'</td>'+
+          '<td></td><td></td>'+
+          '<td style="color:#56789a">'+mn(f.EJECUTADO)+'</td>'+
+          '<td style="color:#56789a">'+mn(f.VENTA_MES_ANT)+'</td>'+
+          '<td>'+arr(f.DIF_DIAS)+'</td>'+
+          '<td style="color:#56789a">'+mn(f.VENTA_AYER)+'</td>'+
+          '<td style="color:#56789a">'+mn(f.VENTA_HOY)+'</td>'+
+          '<td colspan="7"></td>';
+        tbody.appendChild(dtr);
+      });
+    }
+  });
 
   // Fila OTROS CLIENTES (expandable)
   // Días restantes del mes (compartido por OTROS y TOTAL)
