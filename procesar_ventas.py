@@ -319,12 +319,10 @@ def main():
         hrow_sol = buscar_header_row_ob(tmp_sol, "Sheet1")
         sol = pd.read_excel(tmp_sol, sheet_name="Sheet1", header=hrow_sol)
         sol.columns = [str(c).strip() for c in sol.columns]
-        _status = sol["SHIP_STATUS_ENROUTE"]
         filtrado = sol[
             (sol["OB_NOTES_CANCEL_USER"] == "-") &
-            (_status.isna() | (_status == "TCL.ENROUTE_NOT STARTED"))
-        ].copy()
-        filtrado = filtrado.copy()
+            (sol["SHIP_STATUS_ENROUTE"].isna())
+        ].drop_duplicates(subset=["OB"]).copy()
         filtrado["OB_CUSTOMER_CODE"] = filtrado["OB_CUSTOMER_CODE"].replace(COD_ALIAS)
         pendiente = (filtrado
                      .groupby("OB_CUSTOMER_CODE")
