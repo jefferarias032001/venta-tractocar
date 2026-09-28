@@ -502,8 +502,12 @@ def main():
         ruta = f"{ori}-{des}-{tip}"
 
         if cod == "NOCO":
-            if ruta == "CARTAGENA-MADRID-PT": return "Transferencia Ctg - Mad"
-            if ruta == "MADRID-CARTAGENA-PT": return "Transferencia Mad - Ctg"
+            if ruta in ("CARTAGENA-MADRID-PT", "CARTAGENA-MADRID-SC"): return "Transferencia Ctg - Mad"
+            if ruta == "MADRID-CARTAGENA-PT":  return "Transferencia Mad - Ctg"
+            if tip == "TM":                    return "Graneles"
+            if tip in ("TB", "SC"):
+                if "MADRID"    in ori: return "Ruta Cliente Mad"
+                if "CARTAGENA" in ori: return "Ruta Cliente Ctg"
             return "OTROS NOCO"
 
         # AJOV — transferencias
