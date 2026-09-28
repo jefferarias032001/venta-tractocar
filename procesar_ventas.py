@@ -504,19 +504,20 @@ def main():
         if cod == "NOCO":
             return "TRANSFERENCIAS" if ruta in ("CARTAGENA-MADRID-PT", "MADRID-CARTAGENA-PT") else "OTROS NOCO"
 
-        # AJOV
-        if ruta == "CARTAGENA-MADRID-PT":           return "Transferencia CTG - MAD"
-        if ruta == "MADRID-CARTAGENA-PT":           return "Transferencia MAD - CTG"
+        # AJOV — transferencias
+        if ruta in ("CARTAGENA-MADRID-PT", "CARTAGENA-MADRID-SC"): return "Transferencia Ctg - Mad"
+        if ruta == "MADRID-CARTAGENA-PT":           return "Transferencia Mad - Ctg"
         if ruta == "CARTAGENA-MADRID-TM":           return "Graneles"
-        if ruta == "CARTAGENA-MADRID-SC":           return "Transferencia CTG - MAD"
         if ruta in ("CARTAGENA-YUMBO-PT",
-                    "CARTAGENA-YUMBO-SC"):          return "Transferencia CTG - CALI"
+                    "CARTAGENA-YUMBO-SC"):          return "Transferencia Ctg - Cali"
         if ruta == "MADRID-CARTAGENA-SC":           return "SENCILLOS MADRID"
         if ruta == "MADRID-SANTIAGO DE CALI-PT":    return "ZORROS CALI"
         if ruta == "MADRID-BOGOTA-PT":              return "TRANSFERENCIA ALAMO"
-        if ruta == "MADRID-BOGOTA-TB":              return "ENTREGA A CLIENTES"
         if "CALI" in age or age in ("CLO", "CAL"):  return "FIJOS CALI"
         if ori == "LA ESTRELLA":                    return "FIJOS MEDELLIN"
+        # Entrega a clientes — dividir por origen
+        if "MADRID" in ori:                         return "Ruta Cliente Mad"
+        if "CARTAGENA" in ori:                      return "Ruta Cliente Ctg"
         return "ENTREGA A CLIENTES"
 
     ajov_raw = u_nac[u_nac["_CodOrig"].isin(["AJOV", "NOCO"])].copy()
@@ -2727,10 +2728,11 @@ function buildAjover(){
   var tipos = Object.keys(raw).filter(function(t){
     return allMeses.some(function(mes){ var r=getVUN(t,mes); return r.V>0||r.N>0; });
   });
-  var ORDER=['Transferencia CTG - MAD','Transferencia MAD - CTG','Graneles',
-             'Transferencia CTG - CALI','SENCILLOS MADRID','ZORROS CALI',
+  var ORDER=['Transferencia Ctg - Mad','Transferencia Mad - Ctg','Graneles',
+             'Transferencia Ctg - Cali','SENCILLOS MADRID','ZORROS CALI',
              'TRANSFERENCIA ALAMO','FIJOS CALI','FIJOS MEDELLIN',
-             'ENTREGA A CLIENTES','TRANSFERENCIAS','OTROS NOCO'];
+             'Ruta Cliente Mad','Ruta Cliente Ctg','ENTREGA A CLIENTES',
+             'TRANSFERENCIAS','OTROS NOCO'];
   tipos.sort(function(a,b){
     var ia=ORDER.indexOf(a)||99, ib=ORDER.indexOf(b)||99;
     if(ia<0)ia=99; if(ib<0)ib=99;
