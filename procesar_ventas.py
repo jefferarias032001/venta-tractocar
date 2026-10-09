@@ -1608,13 +1608,13 @@ function buildTable(){
     var det=otros.detalle||[];
     det.sort(function(a,b){return b.ej-a.ej;});
     det.forEach(function(c){
-      var dtr=document.createElement('tr');
-      dtr.className='otros-detail'; dtr.style.display='none';
-      var ef=formatBig(c.ej), pf=formatBig(c.pp||0);
-      dtr.innerHTML=
-        '<td style="padding:4px 8px 4px 32px;text-align:left;color:#7aa8cc">&#9492; '+c.cod+'</td>'+
-        '<td style="padding:4px 8px;color:#445566">'+pf.val+pf.unit+'</td>'+
-        '<td colspan="15" style="padding:4px 8px;color:#56789a">'+ef.val+ef.unit+'</td>';
+      var f=calcFila(c.cod);
+      if(!f) return;
+      var dtr=renderRow(f,'otros-detail');
+      dtr.style.display='none';
+      var td0=dtr.querySelector('td');
+      td0.style.paddingLeft='32px';
+      td0.innerHTML='&#9492; '+c.cod;
       tbody.appendChild(dtr);
     });
   }
